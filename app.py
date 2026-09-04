@@ -305,7 +305,8 @@ def analyze_token(symbol):
             oi_display = f"{'+' if vol_delta>0 else ''}{vol_delta}% (Vol Delta)"
 
         base_asset = formatted_symbol.replace("USDT", "")
-        binance_chart_url = f"https://www.binance.com/vi/trade/{base_asset}_USDT?type=spot"
+        tv_chart_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{formatted_symbol}"
+        binance_chart_url = f"https://www.binance.com/en/trade/{base_asset}_USDT"
 
         return {
             "symbol": formatted_symbol,
@@ -322,6 +323,7 @@ def analyze_token(symbol):
             "is_high_volume": is_high_volume,
             "oi_display": oi_display,
             "is_flow_valid": is_flow_valid,
+            "tv_url": tv_chart_url,
             "binance_url": binance_chart_url,
             "status": "OK"
         }
@@ -524,7 +526,8 @@ if auto_refresh or manual_click or st.session_state['scan_results'] is None:
                     "RSI 1h": rsi,
                     "Dòng tiền 1h": oi_str,
                     "Trạng thái": signal,
-                    "Biểu đồ giá": res["binance_url"]
+                    "Chart TradingView": res["tv_url"],
+                    "Chart Binance": res["binance_url"]
                 })
         st.session_state['scan_results'] = results
 
@@ -537,9 +540,13 @@ if st.session_state['scan_results']:
     st.dataframe(
         df_report,
         column_config={
-            "Biểu đồ giá": st.column_config.LinkColumn(
-                "Biểu đồ giá",
-                display_text="📈 Chart Binance"
+            "Chart TradingView": st.column_config.LinkColumn(
+                "Chart TradingView",
+                display_text="📈 Open TradingView"
+            ),
+            "Chart Binance": st.column_config.LinkColumn(
+                "Chart Binance",
+                display_text="🟡 Open Binance"
             )
         },
         use_container_width=True
