@@ -6,8 +6,12 @@ import time
 
 st.set_page_config(page_title="Binance Multi-Token AI Watcher", page_icon="📡", layout="wide")
 
+# Khởi tạo bộ nhớ quản lý vị thế đang mở
+if 'positions' not in st.session_state:
+    st.session_state['positions'] = []
+
 st.title("📡 Binance Agent OS - Watchlist & Auto Alert Agent")
-st.markdown("AI Agent tự động quét Danh sách Token (Watchlist), lọc tín hiệu Khung 4h/1h & Gửi cảnh báo giao dịch.")
+st.markdown("AI Agent tự động quét Watchlist, quản lý rủi ro & Theo dõi Chốt lời / Cắt lỗ Realtime.")
 
 # 1. SIDEBAR CẤU HÌNH VỐN & RỦI RO / LỢI NHUẬN
 st.sidebar.header("⚙️ Quản Lý Vốn & Rủi Ro")
@@ -112,6 +116,76 @@ def analyze_token(symbol):
     except Exception:
         return {"symbol": symbol, "status": "ERROR"}
 
+# 3. QUẢN LÝ CÁC VỊ THẾ ĐANG MỞ & KIỂM TRA CHỐT LỜI / CẮT LỖ
+st.divider()
+st.subheader("📈 Danh Sách Vị Thế Đang Mở & Quản Lý TP/SL")
+
+if st.session_state['positions']:
+    pos_data = []
+    updated_positions = []
+    
+    col_btn1, col_btn2 = st.columns([1, 4])
+    with col_btn1:
+        check_tp_sl = st.button("🔄 Kiểm Tra TP/SL Realtime", type="secondary")
+
+    for pos in st.session_state['positions']:
+        sym = pos['symbol']
+        formatted_sym, df_curr = get_binance_klines(sym, "1h", limit=5)
+        
+        if df_curr is not None:
+            curr_price = df_curr['close'].iloc[-1]
+            pnl_pct = round(((curr_price - pos['entry']) / pos['entry']) * 100, 2)
+            
+            # Kích hoạt Cảnh báo Chốt lời TP
+            if curr_price >= pos['tp']:
+                msg = (
+                    f"🎉 *BINANCE AGENT ALERT: CHẠM TAKE PROFIT!*\n\n"
+                    f"🟢 **Mã Token:** {sym}\n"
+                    f"💵 **Giá Vào (Entry):** ${pos['entry']}\n"
+                    f"🎯 **Giá Chốt Lời (TP):** ${pos['tp']}\n"
+                    f"🚀 **Giá Hiện Tại:** ${curr_price}\n"
+                    f"💰 **Lợi Nhuận Đạt Được:** +{pnl_pct}%\n"
+                    f"✅ **Trạng thái:** Đã đóng vị thế thành công!"
+                )
+                send_telegram_alert(msg)
+                st.balloons()
+                st.success(f"🎉 **{sym}** đã CHẠM TAKE PROFIT (${curr_price})! Đã gửi thông báo Telegram.")
+                continue  # Xóa khỏi danh sách theo dõi
+                
+            # Kích hoạt Cảnh báo Cắt lỗ SL
+            elif curr_price <= pos['sl']:
+                msg = (
+                    f"🛑 *BINANCE AGENT ALERT: CHẠM STOP LOSS!*\n\n"
+                    f"🔴 **Mã Token:** {sym}\n"
+                    f"💵 **Giá Vào (Entry):** ${pos['entry']}\n"
+                    f"🛑 **Giá Cắt Lỗ (SL):** ${pos['sl']}\n"
+                    f"📉 **Giá Hiện Tại:** ${curr_price}\n"
+                    f"🔻 **Thực Lỗ:** {pnl_pct}%\n"
+                    f"⚠️ **Trạng thái:** Đã đóng vị thế cắt lỗ!"
+                )
+                send_telegram_alert(msg)
+                st.error(f"🛑 **{sym}** đã CHẠM STOP LOSS (${curr_price})! Đã gửi thông báo Telegram.")
+                continue  # Xóa khỏi danh sách theo dõi
+                
+            pos_data.append({
+                "Mã Token": sym,
+                "Giá Vào (Entry)": f"${pos['entry']}",
+                "Cắt Lỗ (SL)": f"${pos['sl']}",
+                "Chốt Lời (TP)": f"${pos['tp']}",
+                "Giá Realtime": f"${curr_price}",
+                "Lời/Lỗ PnL (%)": f"{pnl_pct}%",
+                "Khối Lượng": f"{pos['size']} {sym.replace('USDT','')}"
+            })
+            updated_positions.append(pos)
+            
+    st.session_state['positions'] = updated_positions
+    if pos_data:
+        st.dataframe(pd.DataFrame(pos_data), use_container_width=True)
+else:
+    st.info("Chưa có vị thế nào đang mở. Bấm 'Phê duyệt lệnh mua' bên dưới để bắt đầu theo dõi TP/SL!")
+
+# 4. QUÉT WATCHLIST MỚI
+st.divider()
 if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
     tokens = [t.strip() for t in watchlist_input.split(",") if t.strip()]
     
@@ -138,11 +212,9 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                     risk_per_token = price - sl
                     
                     if risk_per_token > 0:
-                        # Chốt lời động dựa theo slider R:R
                         tp = round(price + (risk_per_token * rr_ratio), 4)
                         risk_amount = capital * (risk_pct / 100)
                         
-                        # Giới hạn mua Spot: không dùng vượt quá tổng vốn
                         raw_pos_size = risk_amount / risk_per_token
                         max_pos_size = capital / price
                         pos_size = round(min(raw_pos_size, max_pos_size), 2)
@@ -191,7 +263,6 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
             
         status_text.text("✅ Hoàn tất quét toàn bộ Watchlist!")
         
-        st.divider()
         st.subheader("📊 Bảng Báo Cáo Tín Hiệu Watchlist")
         df_results = pd.DataFrame(results)
         st.dataframe(df_results, use_container_width=True)
@@ -208,5 +279,9 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                 c4.metric("Khối Lượng Vị Thế", f"{pos} {sym.replace('USDT','')}")
                 
                 if st.button(f"✅ PHÊ DUYỆT LỆNH MUA {sym}", key=sym):
+                    # Thêm lệnh vào bộ nhớ Session
+                    st.session_state['positions'].append({
+                        "symbol": sym, "entry": p, "sl": sl, "tp": tp, "size": pos
+                    })
                     st.balloons()
-                    st.success(f"🎉 Đã gửi lệnh MUA thành công {pos} {sym} lên Binance API!")
+                    st.success(f"🎉 Đã phê duyệt {sym}! Vị thế đã chuyển vào Bảng quản lý TP/SL phía trên.")
