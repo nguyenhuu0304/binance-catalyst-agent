@@ -34,7 +34,7 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-st.title("🤖 Binance Agent OS - Smart Trading Bot (Futures Auto-Fallback)")
+st.title("🤖 Binance Agent OS - Smart Trading Bot (Binance Global Price Fixed)")
 st.markdown("Hệ thống lọc **5 Tầng (4H EMA + 1H RSI + Nến Xanh + Volume + Smart OI / Vol Delta)**")
 
 # 1. SIDEBAR CẤU HÌNH VỐN & CHẾ ĐỘ
@@ -158,14 +158,13 @@ def process_telegram_updates():
 
 process_telegram_updates()
 
-# 3. BINANCE API & SMART OPEN INTEREST / FALLBACK
+# 3. BINANCE API GLOBAL ONLY (FIXED DISCREPANCY)
 def get_realtime_price(symbol):
     formatted_symbol = symbol.upper().strip().replace("/", "")
     if not formatted_symbol.endswith("USDT"):
         formatted_symbol += "USDT"
         
     endpoints = [
-        f"https://api.binance.us/api/v3/ticker/price?symbol={formatted_symbol}",
         f"https://data-api.binance.vision/api/v3/ticker/price?symbol={formatted_symbol}",
         f"https://api.binance.com/api/v3/ticker/price?symbol={formatted_symbol}"
     ]
@@ -186,7 +185,6 @@ def get_binance_klines(symbol, interval, limit=200):
         formatted_symbol += "USDT"
     
     endpoints = [
-        f"https://api.binance.us/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
         f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
         f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}"
     ]
@@ -231,7 +229,7 @@ def get_binance_open_interest(symbol):
                 return oi_change_pct
     except Exception:
         pass
-    return None  # Trả về None nếu bị chặn IP
+    return None
 
 def analyze_token(symbol):
     try:
@@ -272,14 +270,12 @@ def analyze_token(symbol):
         vol_sma = df_1h['vol_sma20'].iloc[-1]
         is_high_volume = vol_curr > vol_sma if not pd.isna(vol_sma) else True
         
-        # KIỂM TRA OI & FALLBACK VOL DELTA
         oi_change_pct = get_binance_open_interest(formatted_symbol)
         
         if oi_change_pct is not None:
             is_flow_valid = oi_change_pct > 0.0
             oi_display = f"{'+' if oi_change_pct>0 else ''}{oi_change_pct}% (OI)"
         else:
-            # Fallback khi bị Streamlit Cloud US IP Block
             vol_delta = round(((vol_curr - vol_prev) / vol_prev) * 100, 1) if vol_prev > 0 else 0.0
             is_flow_valid = vol_curr > vol_prev
             oi_display = f"{'+' if vol_delta>0 else ''}{vol_delta}% (Vol Delta)"
