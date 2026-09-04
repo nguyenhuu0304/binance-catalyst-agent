@@ -39,15 +39,27 @@ def get_binance_klines(symbol, interval, limit=200):
     if not formatted_symbol.endswith("USDT"):
         formatted_symbol += "USDT"
     
-    url = f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers, timeout=5)
+    # Ưu tiên Binance US API để chạy mượt mà trên Server Cloud đặt tại Mỹ
+    endpoints = [
+        f"https://api.binance.us/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
+        f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
+        f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}"
+    ]
     
-    if res.status_code != 200:
-        return None, None
-        
-    data = res.json()
-    if not isinstance(data, list) or len(data) == 0:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    data = None
+    
+    for url in endpoints:
+        try:
+            res = requests.get(url, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and len(data) > 0:
+                    break
+        except Exception:
+            continue
+            
+    if not data or not isinstance(data, list):
         return None, None
         
     df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'tb_base', 'tb_quote', 'ignore'])
@@ -166,7 +178,7 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                     "Giá Realtime": "N/A",
                     "Xu hướng 4h": "N/A",
                     "RSI 1h": "N/A",
-                    "Trạng thái Signal": "❌ Lỗi / Token không tồn tại"
+                    "Trạng thái Signal": "❌ Lỗi API / Token không tồn tại"
                 })
             
             progress_bar.progress((idx + 1) / len(tokens))
