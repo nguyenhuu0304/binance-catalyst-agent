@@ -34,7 +34,7 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-st.title("🤖 Binance Agent OS - Smart Trading Bot (Binance Global Price Fixed)")
+st.title("🤖 Binance Agent OS - Smart Trading Bot (Realtime Auto-Scan Fixed)")
 st.markdown("Hệ thống lọc **5 Tầng (4H EMA + 1H RSI + Nến Xanh + Volume + Smart OI / Vol Delta)**")
 
 # 1. SIDEBAR CẤU HÌNH VỐN & CHẾ ĐỘ
@@ -57,7 +57,7 @@ mode = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-auto_refresh = st.sidebar.checkbox("🔄 Tự động theo dõi (mỗi 10s)", value=True)
+auto_refresh = st.sidebar.checkbox("🔄 Tự động theo dõi & cập nhật liên tục (mỗi 10s)", value=True)
 
 # 2. XỬ LÝ TELEGRAM
 def send_telegram_alert(message):
@@ -158,7 +158,7 @@ def process_telegram_updates():
 
 process_telegram_updates()
 
-# 3. BINANCE API GLOBAL ONLY (FIXED DISCREPANCY)
+# 3. BINANCE API REALTIME
 def get_realtime_price(symbol):
     formatted_symbol = symbol.upper().strip().replace("/", "")
     if not formatted_symbol.endswith("USDT"):
@@ -412,14 +412,16 @@ if st.session_state['positions']:
 else:
     st.info("Chưa có vị thế nào đang mở.")
 
-# 6. QUÉT TÍN HIỆU Smart Flow
+# 6. QUÉT TÍN HIỆU SMART FLOW (TỰ ĐỘNG CHẠY MỖI VÒNG LẶP)
 st.divider()
-if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền", type="primary"):
+
+manual_click = st.button("🔍 Quét Thủ Công Ngay Lập Tức", type="primary")
+
+# Tự động quét nếu bật auto_refresh HOẶC khi click nút
+if auto_refresh or manual_click or st.session_state['scan_results'] is None:
     tokens = [t.strip() for t in watchlist_input.split(",") if t.strip()]
     if tokens:
         results = []
-        progress_bar = st.progress(0)
-        
         for idx, t in enumerate(tokens):
             res = analyze_token(t)
             if res["status"] == "OK":
@@ -488,12 +490,12 @@ if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền", type="primary"
                     "Dòng tiền 1h": oi_str,
                     "Trạng thái": signal
                 })
-            progress_bar.progress((idx + 1) / len(tokens))
-            
         st.session_state['scan_results'] = results
 
 if st.session_state['scan_results']:
-    st.subheader("📊 Bảng Báo Cáo Giá & Dòng Tiền Realtime")
+    curr_time_str = datetime.now().strftime("%H:%M:%S - %d/%m/%Y")
+    st.subheader(f"📊 Bảng Báo Cáo Giá & Dòng Tiền Realtime")
+    st.caption(f"⚡ *Cập nhật thời gian thực lúc:* **{curr_time_str}** *(Tự nhảy số mỗi 10 giây)*")
     st.dataframe(pd.DataFrame(st.session_state['scan_results']), use_container_width=True)
 
 if auto_refresh:
