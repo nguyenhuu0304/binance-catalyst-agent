@@ -12,7 +12,6 @@ st.set_page_config(page_title="Binance Auto PnL & Alert Bot", page_icon="🤖", 
 CLOSED_TRADES_FILE = "closed_trades.json"
 REPORT_STATE_FILE = "report_state.json"
 
-# --- HÀM LƯU / ĐỌC DỮ LIỆU LỊCH SỬ ---
 def load_json_file(filename, default_val):
     if os.path.exists(filename):
         try:
@@ -29,7 +28,6 @@ def save_json_file(filename, data):
     except Exception:
         pass
 
-# Khởi tạo Session State
 if 'positions' not in st.session_state:
     st.session_state['positions'] = []
 if 'scan_results' not in st.session_state:
@@ -48,21 +46,38 @@ rr_ratio = st.sidebar.slider("Tỷ lệ Lợi nhuận/Rủi ro (R:R)", 1.0, 5.0,
 
 st.sidebar.divider()
 st.sidebar.header("📲 Cấu hình Bot Telegram")
-telegram_token = st.sidebar.text_input("Bot Token", type="password", help="Lấy từ @BotFather")
-telegram_chat_id = st.sidebar.text_input("Chat ID", help="ID tài khoản Telegram")
+telegram_token = st.sidebar.text_input("Bot Token", type="password", help="Lấy từ @BotFather trên Telegram")
+telegram_chat_id = st.sidebar.text_input("Chat ID", value="1892567524", help="ID tài khoản Telegram")
+
+# Lấy token từ Streamlit Secrets nếu có, nếu không lấy từ Sidebar
+tg_token = st.secrets.get("TELEGRAM_TOKEN", telegram_token)
+tg_chat_id = st.secrets.get("TELEGRAM_CHAT_ID", telegram_chat_id)
+
+def send_telegram_alert(message):
+    if tg_token and tg_chat_id:
+        try:
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            payload = {"chat_id": tg_chat_id, "text": message, "parse_mode": "Markdown"}
+            res = requests.post(url, json=payload, timeout=5)
+            return res.status_code == 200
+        except Exception as e:
+            return False
+    return False
+
+# Nút test kiểm tra kết nối Telegram
+if st.sidebar.button("🧪 Bắn thử tin nhắn Telegram ngay"):
+    if not tg_token or not tg_chat_id:
+        st.sidebar.error("❌ Vui lòng nhập Bot Token và Chat ID trước!")
+    else:
+        test_msg = "🔔 *TEST KẾT NỐI:* Binance Agent Bot đã kết nối thành công với Telegram của bạn!"
+        if send_telegram_alert(test_msg):
+            st.sidebar.success("✅ Đã gửi tin nhắn thử thành công! Kiểm tra Telegram điện thoại.")
+        else:
+            st.sidebar.error("❌ Gửi thất bại! Kiểm tra lại Bot Token, Chat ID hoặc nhắn /start cho Bot trên Telegram.")
 
 st.sidebar.divider()
 st.sidebar.header("⚡ Chế Độ Tự Động Quét Realtime")
 auto_refresh = st.sidebar.checkbox("🔄 Tự động theo dõi (mỗi 10s)", value=True)
-
-def send_telegram_alert(message):
-    if telegram_token and telegram_chat_id:
-        try:
-            url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
-            payload = {"chat_id": telegram_chat_id, "text": message, "parse_mode": "Markdown"}
-            requests.post(url, json=payload, timeout=5)
-        except Exception:
-            pass
 
 # LẤY GIÁ THỰC TẾ TRỰC TIẾP TỪ BINANCE
 def get_realtime_price(symbol):
@@ -161,18 +176,14 @@ def analyze_token(symbol):
     except Exception:
         return {"symbol": symbol, "status": "ERROR"}
 
-# --- HÀM KIỂM TRA BÁO CÁO PNL 7:00 AM HẰNG NGÀY ---
+# KIỂM TRA BÁO CÁO PNL 7:00 AM HẰNG NGÀY
 def check_and_send_daily_7am_report():
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
-    
     report_state = load_json_file(REPORT_STATE_FILE, {"last_report_date": ""})
     
-    # Kiểm tra nếu hiện tại là từ 7h00 đến 7h59 sáng và hôm nay chưa gửi báo cáo
     if now.hour == 7 and report_state.get("last_report_date") != today_str:
         closed_trades = load_json_file(CLOSED_TRADES_FILE, [])
-        
-        # Lọc các lệnh đã đóng trong 24h qua
         time_24h_ago = now - timedelta(hours=24)
         recent_trades = []
         for tr in closed_trades:
@@ -190,10 +201,8 @@ def check_and_send_daily_7am_report():
         
         total_pnl_usd = round(sum(t.get('pnl_usd', 0.0) for t in recent_trades), 2)
         total_pnl_pct = round(sum(t.get('pnl_pct', 0.0) for t in recent_trades), 2)
-        
         pnl_emoji = "🟢 +" if total_pnl_usd >= 0 else "🔴 "
         
-        # Tạo nội dung báo cáo Telegram
         msg = (
             f"📊 *BÁO CÁO PNL HẰNG NGÀY (07:00 AM)*\n"
             f"📅 *Ngày:* `{today_str}`\n"
@@ -206,7 +215,6 @@ def check_and_send_daily_7am_report():
             f"📊 **Tổng % Lợi Nhuận:** {pnl_emoji}{total_pnl_pct}%\n"
             f"-----------------------------------\n"
         )
-        
         if recent_trades:
             msg += "📜 *Chi tiết các lệnh đóng 24h qua:*\n"
             for tr in recent_trades:
@@ -215,22 +223,16 @@ def check_and_send_daily_7am_report():
         else:
             msg += "ℹ️ *Khung 24h qua không có lệnh nào chốt TP/SL.*\n"
             
-        send_telegram_alert(msg)
-        
-        # Cập nhật trạng thái đã gửi báo cáo ngày hôm nay
-        report_state["last_report_date"] = today_str
-        save_json_file(REPORT_STATE_FILE, report_state)
+        if send_telegram_alert(msg):
+            report_state["last_report_date"] = today_str
+            save_json_file(REPORT_STATE_FILE, report_state)
 
-# Gọi kiểm tra gửi báo cáo hằng ngày
 check_and_send_daily_7am_report()
 
 # 2. KHU VỰC NHẬP WATCHLIST
-watchlist_input = st.text_input(
-    "📋 Danh sách Token theo dõi:", 
-    value="BTC, ETH, NEAR, SOL, BNB, DOGE"
-)
+watchlist_input = st.text_input("📋 Danh sách Token theo dõi:", value="BTC, ETH, NEAR, SOL, BNB, DOGE")
 
-# 3. QUẢN LÝ VỊ THẾ ĐANG MỞ & TỰ ĐỘNG BÁN BÁO ĐỘNG KHI CẮN TP/SL
+# 3. QUẢN LÝ VỊ THẾ ĐANG MỞ
 st.divider()
 st.subheader("📈 Vị Thế Đang Mở Realtime & Cảnh Báo Tức Thời")
 
@@ -249,7 +251,6 @@ if st.session_state['positions']:
             pnl_usd = round((curr_price - pos['entry']) * pos['size'], 2)
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # KỊCH BẢN 1: CHẠM TAKE PROFIT (TP)
             if curr_price >= pos['tp']:
                 msg = (
                     f"🎉 *BINANCE AGENT ALERT: CHẠM TAKE PROFIT!*\n\n"
@@ -263,19 +264,16 @@ if st.session_state['positions']:
                 )
                 send_telegram_alert(msg)
                 
-                # Lưu vào lịch sử lệnh closed
                 closed_trades.append({
                     "symbol": sym, "entry": pos['entry'], "exit": curr_price,
-                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "result": "WIN",
-                    "exit_time": now_str
+                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "result": "WIN", "exit_time": now_str
                 })
                 save_json_file(CLOSED_TRADES_FILE, closed_trades)
                 
                 st.balloons()
-                st.success(f"🎉 **{sym}** đã CHẠM TAKE PROFIT (${curr_price})! Đã đóng vị thế & báo Telegram.")
+                st.success(f"🎉 **{sym}** đã CHẠM TAKE PROFIT (${curr_price})! Đã báo Telegram.")
                 continue
                 
-            # KỊCH BẢN 2: CHẠM STOP LOSS (SL)
             elif curr_price <= pos['sl']:
                 msg = (
                     f"🛑 *BINANCE AGENT ALERT: CHẠM STOP LOSS!*\n\n"
@@ -285,19 +283,17 @@ if st.session_state['positions']:
                     f"📉 **Giá Khớp Thực Tế:** ${curr_price}\n"
                     f"🔻 **Thực Lỗ:** {pnl_pct}% (${pnl_usd})\n"
                     f"⏰ **Thời gian:** `{now_str}`\n"
-                    f"⚠️ **Trạng thái:** Đã cắt lỗ đóng vị thế!"
+                    f"⚠️ **Trạng thái:** Đã cắt lỗ vị thế!"
                 )
                 send_telegram_alert(msg)
                 
-                # Lưu vào lịch sử lệnh closed
                 closed_trades.append({
                     "symbol": sym, "entry": pos['entry'], "exit": curr_price,
-                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "result": "LOSS",
-                    "exit_time": now_str
+                    "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "result": "LOSS", "exit_time": now_str
                 })
                 save_json_file(CLOSED_TRADES_FILE, closed_trades)
                 
-                st.error(f"🛑 **{sym}** đã CHẠM STOP LOSS (${curr_price})! Đã đóng vị thế & báo Telegram.")
+                st.error(f"🛑 **{sym}** đã CHẠM STOP LOSS (${curr_price})! Đã báo Telegram.")
                 continue
                 
             pos_data.append({
@@ -318,7 +314,6 @@ if st.session_state['positions']:
 else:
     st.info("Chưa có vị thế nào đang mở.")
 
-# DISPLAY LỊCH SỬ NHẬT KÝ ĐÃ ĐÓNG
 if closed_trades:
     with st.expander("📜 Xem Bảng Lịch Sử Lệnh Đã Đóng (Closed Trades & Cumulative PnL)"):
         st.dataframe(pd.DataFrame(closed_trades), use_container_width=True)
@@ -410,7 +405,6 @@ if st.session_state['alerts_triggered']:
                 st.success(f"🎉 Đã mở vị thế {sym} thành công!")
                 st.rerun()
 
-# TỰ ĐỘNG LÀM MỚI MỖI 10 GIÂY ĐỂ THEO DÕI GIÁ & THỜI GIAN
 if auto_refresh:
     time.sleep(10)
     st.rerun()
