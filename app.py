@@ -25,7 +25,7 @@ def send_telegram_alert(message):
             url = f"https://api.telegram.org/bot{telegram_token}/sendMessage"
             payload = {"chat_id": telegram_chat_id, "text": message, "parse_mode": "Markdown"}
             requests.post(url, json=payload, timeout=5)
-        except Exception as e:
+        except Exception:
             pass
 
 # 2. KHU VỰC NHẬP WATCHLIST
@@ -40,8 +40,17 @@ def get_binance_klines(symbol, interval, limit=200):
         formatted_symbol += "USDT"
     
     url = f"https://api.binance.com/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}"
-    res = requests.get(url, timeout=5).json()
-    df = pd.DataFrame(res, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'tb_base', 'tb_quote', 'ignore'])
+    headers = {"User-Agent": "Mozilla/5.0"}
+    res = requests.get(url, headers=headers, timeout=5)
+    
+    if res.status_code != 200:
+        return None, None
+        
+    data = res.json()
+    if not isinstance(data, list) or len(data) == 0:
+        return None, None
+        
+    df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'tb_base', 'tb_quote', 'ignore'])
     df['close'] = df['close'].astype(float)
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
@@ -50,7 +59,12 @@ def get_binance_klines(symbol, interval, limit=200):
 def analyze_token(symbol):
     try:
         formatted_symbol, df_4h = get_binance_klines(symbol, "4h")
+        if df_4h is None:
+            return {"symbol": symbol, "status": "ERROR"}
+            
         _, df_1h = get_binance_klines(symbol, "1h")
+        if df_1h is None:
+            return {"symbol": symbol, "status": "ERROR"}
         
         # 4h Trend
         df_4h['ema50'] = ta.trend.EMAIndicator(df_4h['close'], window=50).ema_indicator()
@@ -107,7 +121,6 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                 bias = res["bias_4h"]
                 rsi = res["rsi_1h"]
                 
-                # BỘ LỌC ĐIỀU KIỆN MUA (4H BULLISH + 1H RSI <= 48)
                 if "BULLISH" in bias and rsi <= 48:
                     sl = round(res["swing_low_1h"] - (res["atr_1h"] * 0.5), 4)
                     risk_per_token = price - sl
@@ -119,17 +132,15 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                         
                         signal = "🟢 KÍCH HOẠT MUA (BUY)"
                         
-                        # Nội dung tin nhắn gửi Telegram
                         alert_msg = (
                             f"🚨 *BINANCE AGENT ALERT: {res['symbol']}*\n\n"
                             f"🟢 **Tín hiệu:** KÍCH HOẠT VỊ THẾ MUA\n"
                             f"📈 **Xu hướng 4h:** TĂNG (Bullish)\n"
-                            f"📉 **RSI 1h:** {rsi} (Vùng điều chỉnh đẹp)\n"
+                            f"📉 **RSI 1h:** {rsi}\n"
                             f"💵 **Entry:** ${price}\n"
                             f"🛑 **Stop Loss:** ${sl}\n"
                             f"🎯 **Take Profit:** ${tp}\n"
-                            f"📊 **Khối lượng khuyến nghị:** {pos_size} {res['symbol'].replace('USDT','')}\n\n"
-                            f"👉 Vào Web ứng dụng để duyệt lệnh!"
+                            f"📊 **Khối lượng:** {pos_size} {res['symbol'].replace('USDT','')}"
                         )
                         alerts_triggered.append((res['symbol'], alert_msg, price, sl, tp, pos_size))
                         send_telegram_alert(alert_msg)
@@ -149,19 +160,25 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                     "RSI 1h": rsi,
                     "Trạng thái Signal": signal
                 })
+            else:
+                results.append({
+                    "Mã Token": t.upper(),
+                    "Giá Realtime": "N/A",
+                    "Xu hướng 4h": "N/A",
+                    "RSI 1h": "N/A",
+                    "Trạng thái Signal": "❌ Lỗi / Token không tồn tại"
+                })
             
             progress_bar.progress((idx + 1) / len(tokens))
             time.sleep(0.2)
             
         status_text.text("✅ Hoàn tất quét toàn bộ Watchlist!")
         
-        # BẢNG TỔNG HỢP KẾT QUẢ
         st.divider()
         st.subheader("📊 Bảng Báo Cáo Tín Hiệu Watchlist")
         df_results = pd.DataFrame(results)
         st.dataframe(df_results, use_container_width=True)
         
-        # NẾU CÓ TOKEN ĐỦ ĐIỀU KIỆN MUA -> HIỆN KHUNG PHÊ DUYỆT
         if alerts_triggered:
             st.divider()
             st.subheader("⚡ Vị Thế Đủ Điều Kiện Khớp Lệnh (Human-in-the-Loop)")
