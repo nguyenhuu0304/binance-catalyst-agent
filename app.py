@@ -9,10 +9,11 @@ st.set_page_config(page_title="Binance Multi-Token AI Watcher", page_icon="📡"
 st.title("📡 Binance Agent OS - Watchlist & Auto Alert Agent")
 st.markdown("AI Agent tự động quét Danh sách Token (Watchlist), lọc tín hiệu Khung 4h/1h & Gửi cảnh báo giao dịch.")
 
-# 1. SIDEBAR CẤU HÌNH
+# 1. SIDEBAR CẤU HÌNH VỐN & RỦI RO / LỢI NHUẬN
 st.sidebar.header("⚙️ Quản Lý Vốn & Rủi Ro")
 capital = st.sidebar.number_input("Tổng vốn tài khoản ($)", value=1000.0, step=100.0)
 risk_pct = st.sidebar.slider("Rủi ro tối đa/lệnh (%)", 0.5, 3.0, 1.5, 0.1)
+rr_ratio = st.sidebar.slider("Tỷ lệ Lợi nhuận/Rủi ro (R:R)", 1.0, 5.0, 2.0, 0.5)
 
 st.sidebar.divider()
 st.sidebar.header("📲 Cấu hình Cảnh báo Telegram (Tùy chọn)")
@@ -39,7 +40,6 @@ def get_binance_klines(symbol, interval, limit=200):
     if not formatted_symbol.endswith("USDT"):
         formatted_symbol += "USDT"
     
-    # Ưu tiên Binance US API để chạy mượt mà trên Server Cloud đặt tại Mỹ
     endpoints = [
         f"https://api.binance.us/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
         f"https://data-api.binance.vision/api/v3/klines?symbol={formatted_symbol}&interval={interval}&limit={limit}",
@@ -138,9 +138,14 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                     risk_per_token = price - sl
                     
                     if risk_per_token > 0:
-                        tp = round(price + (risk_per_token * 2.0), 4)
+                        # Chốt lời động dựa theo slider R:R
+                        tp = round(price + (risk_per_token * rr_ratio), 4)
                         risk_amount = capital * (risk_pct / 100)
-                        pos_size = round(risk_amount / risk_per_token, 2)
+                        
+                        # Giới hạn mua Spot: không dùng vượt quá tổng vốn
+                        raw_pos_size = risk_amount / risk_per_token
+                        max_pos_size = capital / price
+                        pos_size = round(min(raw_pos_size, max_pos_size), 2)
                         
                         signal = "🟢 KÍCH HOẠT MUA (BUY)"
                         
@@ -151,8 +156,8 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                             f"📉 **RSI 1h:** {rsi}\n"
                             f"💵 **Entry:** ${price}\n"
                             f"🛑 **Stop Loss:** ${sl}\n"
-                            f"🎯 **Take Profit:** ${tp}\n"
-                            f"📊 **Khối lượng:** {pos_size} {res['symbol'].replace('USDT','')}"
+                            f"🎯 **Take Profit (1:{rr_ratio}):** ${tp}\n"
+                            f"📊 **Khối lượng Spot:** {pos_size} {res['symbol'].replace('USDT','')}"
                         )
                         alerts_triggered.append((res['symbol'], alert_msg, price, sl, tp, pos_size))
                         send_telegram_alert(alert_msg)
@@ -199,7 +204,7 @@ if st.button("🔍 Quét Toàn Bộ Watchlist Ngay", type="primary"):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Giá Vào (Entry)", f"${p:,.4f}")
                 c2.metric("Cắt Lỗ (SL)", f"${sl:,.4f}")
-                c3.metric("Chốt Lời (TP 1:2)", f"${tp:,.4f}")
+                c3.metric(f"Chốt Lời (TP 1:{rr_ratio})", f"${tp:,.4f}")
                 c4.metric("Khối Lượng Vị Thế", f"{pos} {sym.replace('USDT','')}")
                 
                 if st.button(f"✅ PHÊ DUYỆT LỆNH MUA {sym}", key=sym):
