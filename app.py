@@ -257,13 +257,14 @@ def analyze_token(symbol):
         p_4h_prev = df_4h['close'].iloc[-2]
         pct_4h = ((p_4h_curr - p_4h_prev) / p_4h_prev) * 100 if p_4h_prev > 0 else 0.0
 
-        # Calculate %1h & Vol 1h
+        # Calculate %1h
         p_1h_curr = df_1h['close'].iloc[-1]
         p_1h_prev = df_1h['close'].iloc[-2]
         pct_1h = ((p_1h_curr - p_1h_prev) / p_1h_prev) * 100 if p_1h_prev > 0 else 0.0
 
-        vol_1h_curr = df_1h['qav'].iloc[-1]
-        vol_1h_prev = df_1h['qav'].iloc[-2]
+        # LẤY NẾN ĐÃ ĐÓNG HOÀN CHỈNH ĐỂ SO SÁNH VOLUME (TRÁNH LỖI ĐẦU GIỜ NẾN MỚI)
+        vol_1h_closed_last = df_1h['qav'].iloc[-2]
+        vol_1h_closed_prev = df_1h['qav'].iloc[-3]
 
         df_4h['ema50'] = ta.trend.EMAIndicator(df_4h['close'], window=50).ema_indicator()
         df_4h['ema200'] = ta.trend.EMAIndicator(df_4h['close'], window=200).ema_indicator()
@@ -290,9 +291,8 @@ def analyze_token(symbol):
         
         is_green_candle = df_1h['close'].iloc[-1] > df_1h['open'].iloc[-1]
         vol_curr = df_1h['vol'].iloc[-1]
-        vol_prev = df_1h['vol'].iloc[-2]
         vol_sma = df_1h['vol_sma20'].iloc[-1]
-        is_high_volume = vol_curr > vol_sma if not pd.isna(vol_sma) else True
+        is_high_volume = vol_1h_closed_last > df_1h['vol_sma20'].iloc[-2] if not pd.isna(df_1h['vol_sma20'].iloc[-2]) else True
         
         oi_change_pct = get_binance_open_interest(formatted_symbol)
         
@@ -300,8 +300,8 @@ def analyze_token(symbol):
             is_flow_valid = oi_change_pct > 0.0
             oi_display = f"{'+' if oi_change_pct>0 else ''}{oi_change_pct}% (OI)"
         else:
-            vol_delta = round(((vol_curr - vol_prev) / vol_prev) * 100, 1) if vol_prev > 0 else 0.0
-            is_flow_valid = vol_curr > vol_prev
+            vol_delta = round(((vol_1h_closed_last - vol_1h_closed_prev) / vol_1h_closed_prev) * 100, 1) if vol_1h_closed_prev > 0 else 0.0
+            is_flow_valid = vol_1h_closed_last > vol_1h_closed_prev
             oi_display = f"{'+' if vol_delta>0 else ''}{vol_delta}% (Vol Delta)"
 
         base_asset = formatted_symbol.replace("USDT", "")
@@ -313,8 +313,8 @@ def analyze_token(symbol):
             "price": p_1h,
             "pct_1h": f"{'+' if pct_1h>0 else ''}{pct_1h:.2f}%",
             "pct_4h": f"{'+' if pct_4h>0 else ''}{pct_4h:.2f}%",
-            "vol_1h_curr": format_vol(vol_1h_curr),
-            "vol_1h_prev": format_vol(vol_1h_prev),
+            "vol_1h_curr": format_vol(vol_1h_closed_last),
+            "vol_1h_prev": format_vol(vol_1h_closed_prev),
             "bias_4h": bias,
             "rsi_1h": round(rsi_1h, 2),
             "atr_1h": atr_1h,
