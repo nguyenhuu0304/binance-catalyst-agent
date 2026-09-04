@@ -34,7 +34,7 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-st.title("🤖 Binance Agent OS - Smart Trading Bot (Realtime Auto-Scan Fixed)")
+st.title("🤖 Binance Agent OS - Smart Trading Bot")
 st.markdown("Hệ thống lọc **5 Tầng (4H EMA + 1H RSI + Nến Xanh + Volume + Smart OI / Vol Delta)**")
 
 # 1. SIDEBAR CẤU HÌNH VỐN & CHẾ ĐỘ
@@ -209,6 +209,7 @@ def get_binance_klines(symbol, interval, limit=200):
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
     df['vol'] = df['vol'].astype(float)
+    df['qav'] = df['qav'].astype(float)
     return formatted_symbol, df
 
 def get_binance_open_interest(symbol):
@@ -231,6 +232,16 @@ def get_binance_open_interest(symbol):
         pass
     return None
 
+def format_vol(val):
+    if val >= 1_000_000_000:
+        return f"${val / 1_000_000_000:.2f}B"
+    elif val >= 1_000_000:
+        return f"${val / 1_000_000:.2f}M"
+    elif val >= 1_000:
+        return f"${val / 1_000:.2f}K"
+    else:
+        return f"${val:.2f}"
+
 def analyze_token(symbol):
     try:
         formatted_symbol, df_4h = get_binance_klines(symbol, "4h")
@@ -241,6 +252,19 @@ def analyze_token(symbol):
         if df_1h is None:
             return {"symbol": symbol, "status": "ERROR"}
         
+        # Calculate %4h
+        p_4h_curr = df_4h['close'].iloc[-1]
+        p_4h_prev = df_4h['close'].iloc[-2]
+        pct_4h = ((p_4h_curr - p_4h_prev) / p_4h_prev) * 100 if p_4h_prev > 0 else 0.0
+
+        # Calculate %1h & Vol 1h
+        p_1h_curr = df_1h['close'].iloc[-1]
+        p_1h_prev = df_1h['close'].iloc[-2]
+        pct_1h = ((p_1h_curr - p_1h_prev) / p_1h_prev) * 100 if p_1h_prev > 0 else 0.0
+
+        vol_1h_curr = df_1h['qav'].iloc[-1]
+        vol_1h_prev = df_1h['qav'].iloc[-2]
+
         df_4h['ema50'] = ta.trend.EMAIndicator(df_4h['close'], window=50).ema_indicator()
         df_4h['ema200'] = ta.trend.EMAIndicator(df_4h['close'], window=200).ema_indicator()
         p_4h = df_4h['close'].iloc[-1]
@@ -280,9 +304,16 @@ def analyze_token(symbol):
             is_flow_valid = vol_curr > vol_prev
             oi_display = f"{'+' if vol_delta>0 else ''}{vol_delta}% (Vol Delta)"
 
+        base_asset = formatted_symbol.replace("USDT", "")
+        binance_chart_url = f"https://www.binance.com/vi/trade/{base_asset}_USDT?type=spot"
+
         return {
             "symbol": formatted_symbol,
             "price": p_1h,
+            "pct_1h": f"{'+' if pct_1h>0 else ''}{pct_1h:.2f}%",
+            "pct_4h": f"{'+' if pct_4h>0 else ''}{pct_4h:.2f}%",
+            "vol_1h_curr": format_vol(vol_1h_curr),
+            "vol_1h_prev": format_vol(vol_1h_prev),
             "bias_4h": bias,
             "rsi_1h": round(rsi_1h, 2),
             "atr_1h": atr_1h,
@@ -291,6 +322,7 @@ def analyze_token(symbol):
             "is_high_volume": is_high_volume,
             "oi_display": oi_display,
             "is_flow_valid": is_flow_valid,
+            "binance_url": binance_chart_url,
             "status": "OK"
         }
     except Exception:
@@ -417,7 +449,6 @@ st.divider()
 
 manual_click = st.button("🔍 Quét Thủ Công Ngay Lập Tức", type="primary")
 
-# Tự động quét nếu bật auto_refresh HOẶC khi click nút
 if auto_refresh or manual_click or st.session_state['scan_results'] is None:
     tokens = [t.strip() for t in watchlist_input.split(",") if t.strip()]
     if tokens:
@@ -485,10 +516,15 @@ if auto_refresh or manual_click or st.session_state['scan_results'] is None:
                 results.append({
                     "Mã Token": res["symbol"],
                     "Giá": f"${price:,.4f}",
+                    "%1h": res["pct_1h"],
+                    "%4h": res["pct_4h"],
+                    "Vol 1h Hiện Tại": res["vol_1h_curr"],
+                    "Vol 1h Trước": res["vol_1h_prev"],
                     "Xu hướng 4h": bias,
                     "RSI 1h": rsi,
                     "Dòng tiền 1h": oi_str,
-                    "Trạng thái": signal
+                    "Trạng thái": signal,
+                    "Biểu đồ giá": res["binance_url"]
                 })
         st.session_state['scan_results'] = results
 
@@ -496,7 +532,18 @@ if st.session_state['scan_results']:
     curr_time_str = datetime.now().strftime("%H:%M:%S - %d/%m/%Y")
     st.subheader(f"📊 Bảng Báo Cáo Giá & Dòng Tiền Realtime")
     st.caption(f"⚡ *Cập nhật thời gian thực lúc:* **{curr_time_str}** *(Tự nhảy số mỗi 10 giây)*")
-    st.dataframe(pd.DataFrame(st.session_state['scan_results']), use_container_width=True)
+    
+    df_report = pd.DataFrame(st.session_state['scan_results'])
+    st.dataframe(
+        df_report,
+        column_config={
+            "Biểu đồ giá": st.column_config.LinkColumn(
+                "Biểu đồ giá",
+                display_text="📈 Chart Binance"
+            )
+        },
+        use_container_width=True
+    )
 
 if auto_refresh:
     time.sleep(10)
