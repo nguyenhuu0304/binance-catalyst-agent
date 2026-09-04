@@ -34,8 +34,8 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-st.title("🤖 Binance Agent OS - Smart Trading Bot (Futures OI Enhanced)")
-st.markdown("Hệ thống lọc **5 Tầng (4H EMA + 1H RSI + Nến Xanh + Volume + Open Interest)** & Quản lý vị thế 2 Chế độ.")
+st.title("🤖 Binance Agent OS - Smart Trading Bot (Futures Auto-Fallback)")
+st.markdown("Hệ thống lọc **5 Tầng (4H EMA + 1H RSI + Nến Xanh + Volume + Smart OI / Vol Delta)**")
 
 # 1. SIDEBAR CẤU HÌNH VỐN & CHẾ ĐỘ
 st.sidebar.header("⚙️ Quản Lý Vốn & Rủi Ro")
@@ -69,20 +69,20 @@ def send_telegram_alert(message):
         except Exception:
             pass
 
-def send_telegram_signal_interactive(symbol, price, sl, tp, pos_size, oi_change):
+def send_telegram_signal_interactive(symbol, price, sl, tp, pos_size, oi_str):
     if not tg_token or not tg_chat_id:
         return False
     now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
     msg = (
-        f"🎯 *[TÍN HIỆU MỚI DETECTED - 5 TẦNG LỌC]*\n\n"
+        f"🎯 *[TÍN HIỆU MỚI DETECTED]*\n\n"
         f"🟢 **Mã Token:** `{symbol}`\n"
         f"💵 **Giá Entry:** `${price}`\n"
         f"🛑 **Cắt Lỗ (SL):** `${sl}`\n"
         f"🎯 **Chốt Lời (TP):** `${tp}`\n"
         f"📊 **Khối Lượng:** `{pos_size} {symbol.replace('USDT','')}`\n"
-        f"🔥 **Open Interest (OI 1H):** `+{oi_change}%` (Dòng tiền mập tăng)\n"
+        f"🔥 **Dòng tiền mập:** `{oi_str}`\n"
         f"⏰ **Thời Gian:** `{now_str}`\n\n"
-        f"👉 *Thỏa 5 bộ lọc chuẩn (4H Bullish + RSI<48 + Nến Xanh + Vol>SMA20 + OI Tăng). Bạn có phê duyệt không?*"
+        f"👉 *Thỏa 5 bộ lọc kỹ thuật. Bạn có phê duyệt không?*"
     )
     reply_markup = {
         "inline_keyboard": [
@@ -158,7 +158,7 @@ def process_telegram_updates():
 
 process_telegram_updates()
 
-# 3. BINANCE API & OPEN INTEREST (OI)
+# 3. BINANCE API & SMART OPEN INTEREST / FALLBACK
 def get_realtime_price(symbol):
     formatted_symbol = symbol.upper().strip().replace("/", "")
     if not formatted_symbol.endswith("USDT"):
@@ -213,7 +213,6 @@ def get_binance_klines(symbol, interval, limit=200):
     df['vol'] = df['vol'].astype(float)
     return formatted_symbol, df
 
-# HÀM LẤY LỊCH SỬ OPEN INTEREST (BINANCE FUTURES)
 def get_binance_open_interest(symbol):
     formatted_symbol = symbol.upper().strip().replace("/", "")
     if not formatted_symbol.endswith("USDT"):
@@ -222,7 +221,7 @@ def get_binance_open_interest(symbol):
     url = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={formatted_symbol}&period=1h&limit=5"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, headers=headers, timeout=4)
+        res = requests.get(url, headers=headers, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) >= 2:
@@ -232,7 +231,7 @@ def get_binance_open_interest(symbol):
                 return oi_change_pct
     except Exception:
         pass
-    return 0.0
+    return None  # Trả về None nếu bị chặn IP
 
 def analyze_token(symbol):
     try:
@@ -269,11 +268,21 @@ def analyze_token(symbol):
         
         is_green_candle = df_1h['close'].iloc[-1] > df_1h['open'].iloc[-1]
         vol_curr = df_1h['vol'].iloc[-1]
+        vol_prev = df_1h['vol'].iloc[-2]
         vol_sma = df_1h['vol_sma20'].iloc[-1]
         is_high_volume = vol_curr > vol_sma if not pd.isna(vol_sma) else True
         
+        # KIỂM TRA OI & FALLBACK VOL DELTA
         oi_change_pct = get_binance_open_interest(formatted_symbol)
-        is_oi_rising = oi_change_pct > 0.0
+        
+        if oi_change_pct is not None:
+            is_flow_valid = oi_change_pct > 0.0
+            oi_display = f"{'+' if oi_change_pct>0 else ''}{oi_change_pct}% (OI)"
+        else:
+            # Fallback khi bị Streamlit Cloud US IP Block
+            vol_delta = round(((vol_curr - vol_prev) / vol_prev) * 100, 1) if vol_prev > 0 else 0.0
+            is_flow_valid = vol_curr > vol_prev
+            oi_display = f"{'+' if vol_delta>0 else ''}{vol_delta}% (Vol Delta)"
 
         return {
             "symbol": formatted_symbol,
@@ -284,8 +293,8 @@ def analyze_token(symbol):
             "swing_low_1h": recent_low_1h,
             "is_green_candle": is_green_candle,
             "is_high_volume": is_high_volume,
-            "oi_change_pct": oi_change_pct,
-            "is_oi_rising": is_oi_rising,
+            "oi_display": oi_display,
+            "is_flow_valid": is_flow_valid,
             "status": "OK"
         }
     except Exception:
@@ -407,9 +416,9 @@ if st.session_state['positions']:
 else:
     st.info("Chưa có vị thế nào đang mở.")
 
-# 6. QUÉT TÍN HIỆU 5 TẦNG
+# 6. QUÉT TÍN HIỆU Smart Flow
 st.divider()
-if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền OI", type="primary"):
+if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền", type="primary"):
     tokens = [t.strip() for t in watchlist_input.split(",") if t.strip()]
     if tokens:
         results = []
@@ -423,11 +432,11 @@ if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền OI", type="prima
                 rsi = res["rsi_1h"]
                 is_green = res["is_green_candle"]
                 is_vol = res["is_high_volume"]
-                oi_pct = res["oi_change_pct"]
-                is_oi = res["is_oi_rising"]
+                oi_str = res["oi_display"]
+                is_flow = res["is_flow_valid"]
                 
                 if "BULLISH" in bias:
-                    if rsi <= 48 and is_green and is_vol and is_oi:
+                    if rsi <= 48 and is_green and is_vol and is_flow:
                         sl = round(res["swing_low_1h"] - (res["atr_1h"] * 0.5), 4)
                         risk_per_token = price - sl
                         
@@ -447,23 +456,23 @@ if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền OI", type="prima
                                     })
                                     now_s = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
                                     auto_msg = (
-                                        f"⚡ *[AUTO MUA - DÒNG TIỀN OI XÁC NHẬN]*\n\n"
+                                        f"⚡ *[AUTO MUA - DÒNG TIỀN MẬP XÁC NHẬN]*\n\n"
                                         f"🟢 **Token:** `{res['symbol']}`\n"
                                         f"💵 **Entry:** `${price}` | **SL:** `${sl}` | **TP:** `${tp}`\n"
-                                        f"📊 **Size:** `{pos_size}` | 🔥 **OI 1H:** `+{oi_pct}%`\n"
+                                        f"📊 **Size:** `{pos_size}` | 🔥 **Flow:** `{oi_str}`\n"
                                         f"⏰ `{now_s}`"
                                     )
                                     send_telegram_alert(auto_msg)
                                     signal = "⚡ ĐÃ MỞ VỊ THẾ AUTO"
                                 else:
-                                    send_telegram_signal_interactive(res['symbol'], price, sl, tp, pos_size, oi_pct)
+                                    send_telegram_signal_interactive(res['symbol'], price, sl, tp, pos_size, oi_str)
                                     signal = "📲 ĐÃ BẮN NÚT BẤM TELEGRAM"
                             else:
                                 signal = "✅ ĐÃ MỞ VỊ THẾ"
                         else:
                             signal = "🟡 CHỜ (SL không hợp lệ)"
-                    elif rsi <= 48 and is_green and is_vol and not is_oi:
-                        signal = f"🟡 CHỜ OI TĂNG (Hiện tại: {oi_pct}%)"
+                    elif rsi <= 48 and is_green and is_vol and not is_flow:
+                        signal = f"🟡 CHỜ DÒNG TIỀN TĂNG ({oi_str})"
                     elif rsi <= 48 and not is_green:
                         signal = "🟡 CHỜ NẾN XANH"
                     elif rsi <= 48 and not is_vol:
@@ -480,7 +489,7 @@ if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền OI", type="prima
                     "Giá": f"${price:,.4f}",
                     "Xu hướng 4h": bias,
                     "RSI 1h": rsi,
-                    "Biến động OI 1h": f"{'+' if oi_pct>0 else ''}{oi_pct}%",
+                    "Dòng tiền 1h": oi_str,
                     "Trạng thái": signal
                 })
             progress_bar.progress((idx + 1) / len(tokens))
@@ -488,7 +497,7 @@ if st.button("🔍 Quét Giá Thực Tế & Đọc Dòng Tiền OI", type="prima
         st.session_state['scan_results'] = results
 
 if st.session_state['scan_results']:
-    st.subheader("📊 Bảng Báo Cáo Giá & Dòng Tiền OI Realtime")
+    st.subheader("📊 Bảng Báo Cáo Giá & Dòng Tiền Realtime")
     st.dataframe(pd.DataFrame(st.session_state['scan_results']), use_container_width=True)
 
 if auto_refresh:
