@@ -131,7 +131,7 @@ def render_tradingview_widget(symbol="BTCUSDT"):
     components.html(tv_html, height=600)
 
 # ==========================================
-# 5. SIDEBAR CẤU HÌNH (ĐÃ KHÔI PHÚC CHẾ ĐỘ VẬN HÀNH)
+# 5. SIDEBAR CẤU HÌNH & WATCHLIST TOKEN
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Quản Lý Vốn & Rủi Ro")
@@ -148,6 +148,26 @@ with st.sidebar:
         index=0
     )
     
+    st.divider()
+    st.header("📌 Quản Lý Watchlist Token")
+    default_options = [
+        "BTCUSDT", "ETHUSDT", "SOLUSDT", "NEARUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT",
+        "AVAXUSDT", "LINKUSDT", "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "SEIUSDT", "WIFUSDT", "RENDERUSDT"
+    ]
+    selected_watchlist = st.multiselect(
+        "Chọn danh sách Token quét:",
+        options=default_options,
+        default=["BTCUSDT", "ETHUSDT", "NEARUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT"]
+    )
+    
+    custom_token = st.text_input("➕ Thêm Token tùy chỉnh (VD: ADAUSDT):").strip().upper()
+    
+    watchlist = list(selected_watchlist)
+    if custom_token:
+        if custom_token not in watchlist:
+            watchlist.append(custom_token)
+            st.caption(f"✅ Đã thêm `{custom_token}` vào Watchlist")
+
     st.divider()
     st.header("🧠 Gemini AI Analyst")
     user_gemini_key = st.text_input("Gemini API Key", type="password", value=GEMINI_API_KEY)
@@ -180,8 +200,6 @@ tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "⚡ Cấu Hình Binance Futures Real API",
     "🧪 Tài Khoản Demo Binance ($10k)"
 ])
-
-watchlist = ["BTCUSDT", "ETHUSDT", "NEARUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT"]
 
 # --- TAB 1: FUTURES SCANNER & VỊ THẾ ---
 with tab_futures:
@@ -233,7 +251,7 @@ with tab_pnl:
 # --- TAB 4: TRADINGVIEW ---
 with tab_tv:
     st.subheader("📊 Đồ Thị TradingView Interactive Pro")
-    selected_symbol = st.selectbox("Chọn Cặp Coin Phân Tích:", watchlist, index=0)
+    selected_symbol = st.selectbox("Chọn Cặp Coin Phân Tích:", watchlist if watchlist else ["BTCUSDT"], index=0)
     render_tradingview_widget(selected_symbol)
 
 # --- TAB 5: BINANCE REAL API CONFIG ---
@@ -274,7 +292,7 @@ with tab_demo:
     st.markdown("### 🎯 Đặt Lệnh Thử Nghiệm (Giả Lập)")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        d_coin = st.selectbox("Coin", watchlist)
+        d_coin = st.selectbox("Coin", watchlist if watchlist else ["BTCUSDT"])
     with c2:
         d_type = st.selectbox("Loại Lệnh", ["LONG (Futures)", "BUY (Spot)"])
     with c3:
