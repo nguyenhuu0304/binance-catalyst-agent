@@ -1,5 +1,5 @@
 ﻿# ==============================================================================
-# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (FULL COMPLETED VERSION)
+# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (FULL INTERACTIVE TELEGRAM)
 # ==============================================================================
 
 import streamlit as st
@@ -38,7 +38,7 @@ if "watchlist_tokens" not in st.session_state:
 if "last_alert_time" not in st.session_state:
     st.session_state.last_alert_time = {}
 
-# Config mặc định Quản lý vốn & TP/SL
+# Config Quản lý vốn & TP/SL
 if "account_balance" not in st.session_state:
     st.session_state.account_balance = 1000.0
 if "max_risk_pct" not in st.session_state:
@@ -61,7 +61,39 @@ HEADERS = {
 }
 
 # ------------------------------------------------------------------------------
-# 2. HÀM XỬ LÝ BINANCE SIGNED PRIVATE API
+# 2. HÀM TƯƠNG TÁC TELEGRAM BOT (ĐÃ THÊM INLINE KEYBOARD)
+# ------------------------------------------------------------------------------
+def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str = None):
+    """Gửi thông báo Telegram tích hợp nút phê duyệt Đồng Ý Mua / Bỏ Qua"""
+    if not bot_token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    
+    # Bổ sung nút bấm tương tác nếu có truyền symbol
+    if symbol:
+        payload["reply_markup"] = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ ĐỒNG Ý MUA", "callback_data": f"BUY_{symbol}"},
+                    {"text": "❌ BỎ QUA", "callback_data": f"SKIP_{symbol}"}
+                ]
+            ]
+        }
+        
+    try:
+        res = requests.post(url, json=payload, timeout=4)
+        return res.status_code == 200
+    except Exception:
+        return False
+
+# ------------------------------------------------------------------------------
+# 3. BINANCE PRIVATE API (FUTURES SIGNED REQUEST)
 # ------------------------------------------------------------------------------
 def binance_signed_request(method: str, path: str, api_key: str, api_secret: str, params=None):
     if not api_key or not api_secret:
@@ -114,21 +146,10 @@ def get_real_futures_account_info(api_key: str, api_secret: str):
     return usdt_balance, open_positions
 
 # ------------------------------------------------------------------------------
-# 3. HÀM TẢI DỮ LIỆU THỊ TRƯỜNG & CHỈ BÁO KỸ THUẬT CHUẨN
+# 4. HÀM TẢI DỮ LIỆU THỊ TRƯỜNG & PHÂN TÍCH KỸ THUẬT
 # ------------------------------------------------------------------------------
-def send_telegram_alert(bot_token: str, chat_id: str, message: str):
-    if not bot_token or not chat_id:
-        return False
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-    try:
-        res = requests.post(url, json=payload, timeout=4)
-        return res.status_code == 200
-    except Exception:
-        return False
-
 def get_realtime_market_data_bulk(symbols):
-    """Lấy giá Realtime 100% từ Binance Cloud Data Node (Không rào cản IP)"""
+    """Lấy giá Realtime 100% từ Binance Cloud Data Node"""
     result = {}
     try:
         url = "https://data-api.binance.vision/api/v3/ticker/24hr"
@@ -148,12 +169,11 @@ def get_realtime_market_data_bulk(symbols):
     return result
 
 def get_real_technical_indicators(symbol: str):
-    """Tính RSI 1H, Trend 4H (SMA20) & Net Flow (% Dòng tiền Mua/Bán chủ động nến vừa đóng)"""
+    """Tính RSI 1H, Trend 4H (SMA20) & Net Flow (% Lực Mua/Bán chủ động nến vừa đóng)"""
     rsi_1h = 50.0
     trend_4h = "NEUTRAL ⚪"
     vol_delta_str = "+0.0% (Net Flow)"
 
-    # Nến 1H: Tính RSI + Net Buy/Sell Flow
     try:
         url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
         res = requests.get(url_1h, timeout=4, headers=HEADERS).json()
@@ -169,11 +189,11 @@ def get_real_technical_indicators(symbol: str):
             if not pd.isna(rsi_val):
                 rsi_1h = round(rsi_val, 1)
             
-            # SỬA LỖI LOGIC DÒNG TIỀN: Sử dụng cây nến 1H đã đóng cửa gần nhất (res[-2])
+            # Sử dụng cây nến 1H đã đóng cửa gần nhất (res[-2]) để tính Net Flow chuẩn xác
             last_closed_kline = res[-2]
-            total_quote_vol = float(last_closed_kline[7])    # Tổng khối lượng giao dịch USDT
-            buy_quote_vol = float(last_closed_kline[10])     # Taker Buy Quote Asset Volume (Lực Mua)
-            sell_quote_vol = total_quote_vol - buy_quote_vol # Lực Bán
+            total_quote_vol = float(last_closed_kline[7])
+            buy_quote_vol = float(last_closed_kline[10])
+            sell_quote_vol = total_quote_vol - buy_quote_vol
             
             if total_quote_vol > 0:
                 net_delta_pct = ((buy_quote_vol - sell_quote_vol) / total_quote_vol) * 100
@@ -181,7 +201,6 @@ def get_real_technical_indicators(symbol: str):
     except Exception:
         pass
 
-    # Nến 4H: Tính Xu hướng SMA20
     try:
         url_4h = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=4h&limit=30"
         res = requests.get(url_4h, timeout=4, headers=HEADERS).json()
@@ -210,7 +229,7 @@ def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_de
     - RSI 1H: {rsi_1h}
     - Vol Delta 1H: {vol_delta}
 
-    Trả về đúng định dạng JSON sau (không chứa markdown hay chữ thừa):
+    Trả về đúng định dạng JSON:
     {{
         "score": <Số từ 1 đến 10>,
         "risk_warning": "<Nhận định rủi ro ngắn gọn dưới 15 từ>"
@@ -246,17 +265,28 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
             status = "🎯 TÍN HIỆU MUA"
             ai_eval = analyze_trade_signal_gemini(symbol, price, rsi_1h, vol_delta, trend_4h, "Spot" if is_spot else "Futures", user_gemini_key)
             
+            # Tính toán SL & TP cụ thể cho thông báo Telegram
+            sl_pct = st.session_state.max_risk_pct / 100.0
+            tp_pct = (st.session_state.max_risk_pct * st.session_state.tp_rr_ratio) / 100.0
+            sl_price = price * (1 - sl_pct)
+            tp_price = price * (1 + tp_pct)
+
             now_ts = time.time()
             last_sent = st.session_state.last_alert_time.get(symbol, 0)
+            
             if now_ts - last_sent > 300 and bot_token and chat_id:
-                msg = f"🚨 <b>TÍN HIỆU CẢNH BÁO ({'SPOT' if is_spot else 'FUTURES'})</b>\n\n" \
-                      f"🔹 <b>Token:</b> {symbol}\n" \
-                      f"🔹 <b>Giá Realtime:</b> ${price:,.2f}\n" \
-                      f"🔹 <b>RSI 1H:</b> {rsi_1h}\n" \
-                      f"🔹 <b>Trend 4H:</b> {trend_4h}\n" \
+                msg = f"🎯 <b>[TÍN HIỆU MỚI DETECTED]</b>\n\n" \
+                      f"🟢 <b>Mã Token:</b> {symbol}\n" \
+                      f"💵 <b>Giá Entry:</b> ${price:,.2f}\n" \
+                      f"🛑 <b>Cắt Lỗ (SL):</b> ${sl_price:,.2f} (-{st.session_state.max_risk_pct}%)\n" \
+                      f"🎯 <b>Chốt Lời (TP):</b> ${tp_price:,.2f} (+{st.session_state.max_risk_pct * st.session_state.tp_rr_ratio}%)\n" \
+                      f"🔥 <b>Dòng tiền:</b> {vol_delta}\n" \
                       f"🧠 <b>AI Score:</b> {ai_eval.get('score')}/10\n" \
-                      f"⚠️ <b>Nhận Định:</b> {ai_eval.get('risk_warning')}"
-                if send_telegram_alert(bot_token, chat_id, msg):
+                      f"⚠️ <b>Nhận định:</b> {ai_eval.get('risk_warning')}\n" \
+                      f"⏰ <b>Thời Gian:</b> {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}\n\n" \
+                      f"👉 <b>Thỏa bộ lọc kỹ thuật. Bạn có phê duyệt không?</b>"
+                      
+                if send_telegram_alert(bot_token, chat_id, msg, symbol=symbol):
                     st.session_state.last_alert_time[symbol] = now_ts
         else:
             status = "⏳ CHỜ TÍN HIỆU"
@@ -282,7 +312,7 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
     return pd.DataFrame(data)
 
 # ------------------------------------------------------------------------------
-# 4. TRADINGVIEW WIDGET
+# 5. TRADINGVIEW PRO WIDGET
 # ------------------------------------------------------------------------------
 def render_tradingview_widget(symbol="BTCUSDT"):
     tv_html = f"""
@@ -309,7 +339,7 @@ def render_tradingview_widget(symbol="BTCUSDT"):
     components.html(tv_html, height=550)
 
 # ------------------------------------------------------------------------------
-# 5. THANH SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO, TP/SL & WATCHLIST TOKEN
+# 6. SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO, TP/SL & WATCHLIST
 # ------------------------------------------------------------------------------
 with st.sidebar:
     st.subheader("⚙️ Quản Lý Vốn & Rủi Ro")
@@ -344,7 +374,7 @@ with st.sidebar:
         if send_telegram_alert(st.session_state.bot_token, st.session_state.chat_id, "🔔 <b>Test Kết Nối Telegram Realtime Thành Công!</b>"):
             st.success("Đã gửi tin nhắn test thành công!")
         else:
-            st.error("Gửi thất bại. Kiểm tra Token/Chat ID.")
+            st.error("Gửi thất bại. Kiểm tra Bot Token/Chat ID.")
 
     st.divider()
 
@@ -384,14 +414,14 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 Tự động cập nhật (15s)", value=False, key="sb_auto_refresh")
 
 # ------------------------------------------------------------------------------
-# 6. GIAO DIỆN CHÍNH & TÍCH HỢP 6 TABS ĐẦY ĐỦ
+# 7. GIAO DIỆN CHÍNH & 6 TABS FUNCTIONAL
 # ------------------------------------------------------------------------------
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
 
 if trading_mode == "⚡ Tự Động Đặt Lệnh (Auto)":
     st.warning("⚠️ **Đang bật Chế độ AUTO TRADING**: Bot sẽ tự động thực thi lệnh khi thỏa điều kiện RSI & AI Score.")
 elif trading_mode == "🛡️ Bán Tự Động (Semi-Auto)":
-    st.info("ℹ️ **Đang bật Chế độ SEMI-AUTO**: Bot gửi tín hiệu qua Telegram để xác nhận trước khi vào lệnh.")
+    st.info("ℹ️ **Đang bật Chế độ SEMI-AUTO**: Bot gửi tín hiệu qua Telegram kèm nút xác nhận duyệt lệnh.")
 else:
     st.success("📡 **Đang bật Chế độ MANUAL**: Chỉ phân tích, hỗ trợ và bắn thông báo Telegram.")
 
@@ -530,11 +560,9 @@ with tab_demo:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚀 Mở Lệnh Demo", type="primary", key="demo_open_btn"):
             if st.session_state.demo_balance >= d_amount:
-                # Lấy giá Realtime hiện tại
                 prices = get_realtime_market_data_bulk([d_coin])
                 entry_price = prices.get(d_coin, {}).get("price", 100.0)
                 
-                # Tính TP / SL dựa theo thiết lập Sidebar
                 sl_pct = st.session_state.max_risk_pct / 100.0
                 tp_pct = (st.session_state.max_risk_pct * st.session_state.tp_rr_ratio) / 100.0
                 
@@ -565,7 +593,7 @@ with tab_demo:
         st.dataframe(pd.DataFrame(st.session_state.demo_positions), use_container_width=True)
 
 # ------------------------------------------------------------------------------
-# 7. LỆNH TỰ ĐỘNG CẬP NHẬT TRANG (AUTO REFRESH)
+# 8. LỆNH TỰ ĐỘNG CẬP NHẬT TRANG (AUTO REFRESH)
 # ------------------------------------------------------------------------------
 if auto_refresh:
     time.sleep(15)
