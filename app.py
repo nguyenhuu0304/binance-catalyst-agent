@@ -23,10 +23,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Lấy Gemini API Key mặc định từ Streamlit Secrets nếu có
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-# Khởi tạo các biến Session State
 if "demo_balance" not in st.session_state:
     st.session_state.demo_balance = 10000.0
 
@@ -44,20 +42,14 @@ if "watchlist_tokens" not in st.session_state:
 if "last_alert_time" not in st.session_state:
     st.session_state.last_alert_time = {}
 
-SYMBOL_MAP = {
-    "BTCUSDT": "BTC", "ETHUSDT": "ETH", "NEARUSDT": "NEAR", 
-    "SOLUSDT": "SOL", "BNBUSDT": "BNB", "DOGEUSDT": "DOGE", "PEPEUSDT": "PEPE"
-}
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 # ------------------------------------------------------------------------------
-# 2. HÀM XỬ LÝ BINANCE SIGNED PRIVATE API (THẬT 100%)
+# 2. HÀM XỬ LÝ BINANCE SIGNED PRIVATE API
 # ------------------------------------------------------------------------------
 def binance_signed_request(method: str, path: str, api_key: str, api_secret: str, params=None):
-    """Thực hiện request có chữ ký HMAC SHA256 tới Binance Futures REST API"""
     if not api_key or not api_secret:
         return None
     if params is None:
@@ -81,7 +73,6 @@ def binance_signed_request(method: str, path: str, api_key: str, api_secret: str
         return {"error": str(e)}
 
 def get_real_futures_account_info(api_key: str, api_secret: str):
-    """Tải số dư tài khoản USDT Futures và các vị thế đang chạy thực tế"""
     data = binance_signed_request("GET", "/fapi/v2/account", api_key, api_secret)
     if not data or "code" in data or "assets" not in data:
         return None, []
@@ -109,45 +100,40 @@ def get_real_futures_account_info(api_key: str, api_secret: str):
     return usdt_balance, open_positions
 
 # ------------------------------------------------------------------------------
-# 3. HÀM TẢI DỮ LIỆU THỊ TRƯỜNG & CHỈ BÁO REALTIME (CHỐNG CHẶN IP CLOUD)
+# 3. HÀM TẢI DỮ LIỆU THỊ TRƯỜNG & CHỈ BÁO NGUYÊN BẢN (BINANCE DATA VISION NODE)
 # ------------------------------------------------------------------------------
 def get_realtime_market_data_bulk(symbols):
-    """Lấy giá realtime, biến động 24h và volume từ CryptoCompare API (Không bị chặn IP Streamlit Cloud)"""
-    clean_fsyms = [SYMBOL_MAP.get(s, s.replace("USDT", "")) for s in symbols]
-    fsyms_str = ",".join(clean_fsyms)
-    url = f"https://min-api.cryptocompare.com/data/pricemultifull?fsyms={fsyms_str}&tsyms=USDT"
-    
+    """Lấy giá Realtime 100% từ Binance Cloud Data Node (không bị chặn IP)"""
     result = {}
     try:
+        url = "https://data-api.binance.vision/api/v3/ticker/24hr"
         res = requests.get(url, timeout=5, headers=HEADERS).json()
-        raw_data = res.get("RAW", {})
-        for sym in symbols:
-            coin_code = SYMBOL_MAP.get(sym, sym.replace("USDT", ""))
-            if coin_code in raw_data and "USDT" in raw_data[coin_code]:
-                info = raw_data[coin_code]["USDT"]
-                result[sym] = {
-                    "price": float(info.get("PRICE", 0)),
-                    "change_24h": float(info.get("CHANGEPCT24HOUR", 0)),
-                    "vol_24h": float(info.get("VOLUME24HOURTO", 0)) / 1_000_000
-                }
+        if isinstance(res, list):
+            symbol_set = set(symbols)
+            for item in res:
+                s = item.get("symbol")
+                if s in symbol_set:
+                    result[s] = {
+                        "price": float(item.get("lastPrice", 0)),
+                        "change_24h": float(item.get("priceChangePercent", 0)),
+                        "vol_24h": float(item.get("quoteVolume", 0)) / 1_000_000
+                    }
     except Exception:
         pass
     return result
 
 def get_real_technical_indicators(symbol: str):
-    """Tính toán RSI 1H, Trend 4H (SMA20) và Volume Delta 1H thực tế"""
-    coin_code = SYMBOL_MAP.get(symbol, symbol.replace("USDT", ""))
+    """Tính toán RSI 1H, Trend 4H (SMA20) và Volume Delta trực tiếp từ Nến Binance"""
     rsi_1h = 50.0
     trend_4h = "NEUTRAL ⚪"
     vol_delta_str = "0.0% (Vol Delta)"
 
-    # Tải Nến 1H để tính RSI 14 & Vol Delta
+    # Nến 1H
     try:
-        url_1h = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={coin_code}&tsym=USDT&limit=30"
+        url_1h = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
         res = requests.get(url_1h, timeout=4, headers=HEADERS).json()
-        data_list = res.get("Data", {}).get("Data", [])
-        if len(data_list) >= 15:
-            closes = [float(k["close"]) for k in data_list]
+        if isinstance(res, list) and len(res) >= 15:
+            closes = [float(k[4]) for k in res]
             df = pd.DataFrame({'close': closes})
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -158,7 +144,7 @@ def get_real_technical_indicators(symbol: str):
             if not pd.isna(rsi_val):
                 rsi_1h = round(rsi_val, 1)
             
-            vols = [float(k["volumeto"]) for k in data_list]
+            vols = [float(k[7]) for k in res]
             avg_vol = sum(vols[:-1]) / len(vols[:-1]) if len(vols) > 1 else 1
             last_vol = vols[-1]
             vol_diff = ((last_vol - avg_vol) / avg_vol) * 100 if avg_vol > 0 else 0
@@ -166,13 +152,12 @@ def get_real_technical_indicators(symbol: str):
     except Exception:
         pass
 
-    # Tải Nến 4H để tính Trend SMA20
+    # Nến 4H
     try:
-        url_4h = f"https://min-api.cryptocompare.com/data/v2/histohour?fsym={coin_code}&tsym=USDT&limit=80&aggregate=4"
+        url_4h = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval=4h&limit=30"
         res = requests.get(url_4h, timeout=4, headers=HEADERS).json()
-        data_list = res.get("Data", {}).get("Data", [])
-        if len(data_list) >= 10:
-            closes_4h = [float(k["close"]) for k in data_list]
+        if isinstance(res, list) and len(res) >= 10:
+            closes_4h = [float(k[4]) for k in res]
             current_price = closes_4h[-1]
             sma20 = sum(closes_4h[-20:]) / min(len(closes_4h), 20)
             trend_4h = "BULLISH 🟢" if current_price >= sma20 else "BEARISH 🔴"
@@ -185,7 +170,6 @@ def get_real_technical_indicators(symbol: str):
 # 4. HÀM TÍCH HỢP TELEGRAM & GEMINI AI ANALYST
 # ------------------------------------------------------------------------------
 def send_telegram_alert(bot_token: str, chat_id: str, message: str):
-    """Gửi thông báo định dạng HTML về Telegram Bot"""
     if not bot_token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -197,7 +181,6 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str):
         return False
 
 def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_delta: str, trend_4h: str, market_type="Futures", user_key="") -> dict:
-    """Gọi Gemini 2.5 Flash API để phân tích điểm vào lệnh và đánh giá rủi ro"""
     active_key = user_key if user_key else GEMINI_API_KEY
     if not active_key:
         return {"score": "—", "risk_warning": "Chưa nhập Gemini API Key"}
@@ -247,12 +230,10 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
 
         rsi_1h, trend_4h, vol_delta = get_real_technical_indicators(symbol)
         
-        # Điều kiện phát tín hiệu Mua (RSI <= 48 & Trend 4H Bullish)
         if rsi_1h <= 48 and "BULLISH" in trend_4h:
             status = "🎯 TÍN HIỆU MUA"
             ai_eval = analyze_trade_signal_gemini(symbol, price, rsi_1h, vol_delta, trend_4h, "Spot" if is_spot else "Futures", user_gemini_key)
             
-            # Gửi cảnh báo Telegram (Co-oldown 5 phút mỗi token)
             now_ts = time.time()
             last_sent = st.session_state.last_alert_time.get(symbol, 0)
             if now_ts - last_sent > 300 and bot_token and chat_id:
@@ -269,9 +250,11 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
             status = "⏳ CHỜ TÍN HIỆU"
             ai_eval = {"score": "—", "risk_warning": "Chưa đạt vùng tín hiệu"}
 
+        formatted_price = f"${price:,.4f}" if 0 < price < 1 else (f"${price:,.2f}" if price >= 1 else "$0.00")
+
         data.append({
             "Mã Token": symbol,
-            "Giá Hiện Tại": f"${price:,.4f}" if 0 < price < 1 else (f"${price:,.2f}" if price >= 1 else "Đang tải..."),
+            "Giá Hiện Tại": formatted_price,
             "Thay Đổi 24h": f"{price_change:+.2f}%",
             "Vol 24h": f"${vol_24h:.2f}M",
             "Xu hướng 4H": trend_4h,
@@ -314,7 +297,7 @@ def render_tradingview_widget(symbol="BTCUSDT"):
     components.html(tv_html, height=600)
 
 # ------------------------------------------------------------------------------
-# 7. THANH SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO & WATCHLIST TOKEN (FULL)
+# 7. THANH SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO & WATCHLIST TOKEN
 # ------------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ Quản Lý Vốn & Rủi Ro")
@@ -345,7 +328,6 @@ with st.sidebar:
     st.divider()
     st.header("📌 Quản Lý Watchlist Token")
     
-    # Ô nhập thêm Token mới
     col_in, col_btn = st.columns([3, 1])
     with col_in:
         new_token_str = st.text_input("Token", placeholder="VD: ADAUSDT", label_visibility="collapsed").strip().upper()
@@ -355,7 +337,6 @@ with st.sidebar:
                 st.session_state.watchlist_tokens.append(new_token_str)
                 st.rerun()
 
-    # Khung chọn/xóa Token (Tự động lưu Session State khi bấm dấu 'x')
     updated_watchlist = st.multiselect(
         "Danh sách đang quét (Bấm 'x' để bớt Token):",
         options=st.session_state.watchlist_tokens,
@@ -385,7 +366,6 @@ with st.sidebar:
 # ------------------------------------------------------------------------------
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
 
-# Thông báo trạng thái chế độ giao dịch
 if trading_mode == "⚡ Tự Động Đặt Lệnh (Auto)":
     st.warning("⚠️ **Đang bật Chế độ AUTO TRADING**: Bot sẽ tự động thực thi lệnh khi thỏa điều kiện RSI & AI Score.")
 elif trading_mode == "🛡️ Bán Tự Động (Semi-Auto)":
@@ -393,7 +373,6 @@ elif trading_mode == "🛡️ Bán Tự Động (Semi-Auto)":
 else:
     st.success("📡 **Đang bật Chế độ MANUAL**: Chỉ phân tích, hỗ trợ và bắn thông báo Telegram.")
 
-# TÍCH HỢP ĐẦY ĐỦ 6 TABS CHỨC NĂNG
 tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "🚀 Realtime Scanner & Vị Thế", 
     "🛒 Binance Spot Market", 
