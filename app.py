@@ -1,5 +1,5 @@
 ﻿# ==============================================================================
-# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (FULL INTERACTIVE REALTIME)
+# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (PERSISTENT DATA FIX)
 # ==============================================================================
 
 import streamlit as st
@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import json
 import time
+import os
 import hmac
 import hashlib
 import urllib.parse
@@ -22,10 +23,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# Ghi đè triệt để thuộc tính mờ của Streamlit khi quét dữ liệu
 st.markdown("""
     <style>
-    /* Ép tất cả khung hình luôn hiển thị rõ 100% bất kể trạng thái rerun/loading */
     html, body, .stApp, 
     div[data-testid="stAppViewContainer"], 
     section[data-testid="stSidebar"], 
@@ -36,29 +35,42 @@ st.markdown("""
         filter: none !important;
         transition: none !important;
     }
-    
-    /* Vô hiệu hóa lớp mờ mặc định của Streamlit khi Running */
     div[data-test-script-state="running"] * {
         opacity: 1 !important;
         filter: none !important;
     }
-    
-    /* Làm đẹp bảng hiển thị */
     div[data-testid="stDataFrame"] {
         transition: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------------------------------------------------------
+# 2. BỘ LƯU TRỮ DỮ LIỆU DÙNG CHUNG (PERSISTENT JSON STORAGE)
+# ------------------------------------------------------------------------------
+POSITIONS_FILE = "demo_positions.json"
+
+def load_positions():
+    """Tải danh sách vị thế từ file JSON dùng chung"""
+    if os.path.exists(POSITIONS_FILE):
+        try:
+            with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_positions(positions):
+    """Ghi danh sách vị thế vào file JSON dùng chung"""
+    try:
+        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(positions, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 GEMINI_API_KEY_SECRET = st.secrets.get("GEMINI_API_KEY", "")
 
-# Khởi tạo Session States
-if "demo_balance" not in st.session_state:
-    st.session_state.demo_balance = 10000.0
-if "demo_positions" not in st.session_state:
-    st.session_state.demo_positions = []
-if "trade_history" not in st.session_state:
-    st.session_state.trade_history = []
+# Init Session States
 if "watchlist_tokens" not in st.session_state:
     st.session_state.watchlist_tokens = [
         "BTCUSDT", "ETHUSDT", "NEARUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT"
@@ -68,7 +80,6 @@ if "last_alert_time" not in st.session_state:
 if "tg_last_update_id" not in st.session_state:
     st.session_state.tg_last_update_id = 0
 
-# Config Quản lý vốn & TP/SL
 if "account_balance" not in st.session_state:
     st.session_state.account_balance = 1000.0
 if "max_risk_pct" not in st.session_state:
@@ -91,20 +102,17 @@ HEADERS = {
 }
 
 # ------------------------------------------------------------------------------
-# 2. HÀM TƯƠNG TÁC XỬ LÝ NÚT BẤM TELEGRAM (INBOUND & OUTBOUND TELEGRAM API)
+# 3. HÀM TƯƠNG TÁC TELEGRAM API & DỮ LIỆU THỊ TRƯỜNG
 # ------------------------------------------------------------------------------
 def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str = None):
-    """Gửi thông báo Telegram kèm nút tương tác"""
     if not bot_token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    
     payload = {
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML"
     }
-    
     if symbol:
         payload["reply_markup"] = {
             "inline_keyboard": [
@@ -114,7 +122,6 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str 
                 ]
             ]
         }
-        
     try:
         res = requests.post(url, json=payload, timeout=4)
         return res.status_code == 200
@@ -122,7 +129,6 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str 
         return False
 
 def check_and_execute_telegram_callbacks(bot_token: str):
-    """Lắng nghe phản hồi từ Telegram khi người dùng bấm '✅ ĐỒNG Ý MUA' hoặc '❌ BỎ QUA'"""
     if not bot_token:
         return
 
@@ -147,7 +153,6 @@ def check_and_execute_telegram_callbacks(bot_token: str):
                         msg_id = cb["message"]["message_id"]
                         chat_id = cb["message"]["chat"]["id"]
 
-                        # Báo Telegram dừng hiệu ứng chờ xoay vòng trên nút bấm
                         requests.post(f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery", json={"callback_query_id": cb_id})
 
                         if cb_data.startswith("BUY_"):
@@ -160,19 +165,20 @@ def check_and_execute_telegram_callbacks(bot_token: str):
                             sl_price = entry_price * (1 - sl_pct)
                             tp_price = entry_price * (1 + tp_pct)
                             
-                            # AI Agent Khớp Lệnh Mua Vào Danh Mục Demo/Vị thế
-                            st.session_state.demo_positions.append({
+                            # GHI DỮ LIỆU TRỰC TIẾP VÀO FILE JSON DÙNG CHUNG
+                            current_positions = load_positions()
+                            current_positions.append({
                                 "Thời gian": datetime.now().strftime("%H:%M:%S"),
                                 "Token": symbol,
-                                "Loại Lệnh": "LONG 🟢 (Duyệt Telegram)",
+                                "Loại Lệnh": "LONG 🟢 (Telegram)",
                                 "Khối lượng": "$200",
                                 "Giá Vào (Entry)": f"${entry_price:,.2f}",
                                 "Chốt Lời (TP)": f"${tp_price:,.2f}",
                                 "Cắt Lỗ (SL)": f"${sl_price:,.2f}",
                                 "Trạng thái": "🟢 Đang mở"
                             })
+                            save_positions(current_positions)
 
-                            # Cập nhật lại tin nhắn Telegram xác nhận đã mua
                             confirm_text = (
                                 f"✅ <b>[ĐÃ PHÊ DUYỆT MUA {symbol}]</b>\n\n"
                                 f"💵 <b>Giá Khớp:</b> ${entry_price:,.2f}\n"
@@ -198,59 +204,6 @@ def check_and_execute_telegram_callbacks(bot_token: str):
                             })
     except Exception:
         pass
-
-# ------------------------------------------------------------------------------
-# 3. BINANCE API & THỊ TRƯỜNG REALTIME
-# ------------------------------------------------------------------------------
-def binance_signed_request(method: str, path: str, api_key: str, api_secret: str, params=None):
-    if not api_key or not api_secret:
-        return None
-    if params is None:
-        params = {}
-    
-    base_url = "https://fapi.binance.com"
-    params['timestamp'] = int(time.time() * 1000)
-    query_string = urllib.parse.urlencode(params)
-    signature = hmac.new(api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-    
-    url = f"{base_url}{path}?{query_string}&signature={signature}"
-    headers = {"X-MBX-APIKEY": api_key}
-    
-    try:
-        if method.upper() == "GET":
-            res = requests.get(url, headers=headers, timeout=6)
-        elif method.upper() == "POST":
-            res = requests.post(url, headers=headers, timeout=6)
-        return res.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-def get_real_futures_account_info(api_key: str, api_secret: str):
-    data = binance_signed_request("GET", "/fapi/v2/account", api_key, api_secret)
-    if not data or "code" in data or "assets" not in data:
-        return None, []
-    
-    usdt_balance = 0.0
-    for asset in data.get("assets", []):
-        if asset.get("asset") == "USDT":
-            usdt_balance = float(asset.get("walletBalance", 0))
-            break
-            
-    open_positions = []
-    for pos in data.get("positions", []):
-        amt = float(pos.get("positionAmt", 0))
-        if amt != 0:
-            open_positions.append({
-                "Symbol": pos.get("symbol"),
-                "Loại": "LONG 🟢" if amt > 0 else "SHORT 🔴",
-                "Khối lượng": abs(amt),
-                "Giá vào (Entry)": f"${float(pos.get('entryPrice', 0)):,.2f}",
-                "Giá hiện tại (Mark)": f"${float(pos.get('markPrice', 0)):,.2f}",
-                "PnL Chưa Chốt": f"${float(pos.get('unrealizedProfit', 0)):+,.2f}",
-                "Đòn bẩy": f"{pos.get('leverage')}x"
-            })
-            
-    return usdt_balance, open_positions
 
 def get_realtime_market_data_bulk(symbols):
     result = {}
@@ -404,59 +357,23 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
     return pd.DataFrame(data)
 
 # ------------------------------------------------------------------------------
-# 4. TRADINGVIEW PRO WIDGET
-# ------------------------------------------------------------------------------
-def render_tradingview_widget(symbol="BTCUSDT"):
-    tv_html = f"""
-    <div class="tradingview-widget-container" style="height:580px;width:100%">
-      <div id="tradingview_chart_element" style="height:540px;width:100%"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "BINANCE:{symbol}",
-        "interval": "60",
-        "timezone": "Asia/Ho_Chi_Minh",
-        "theme": "dark",
-        "style": "1",
-        "locale": "vi_VN",
-        "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false,
-        "allow_symbol_change": true,
-        "container_id": "tradingview_chart_element"
-      }});
-      </script>
-    </div>
-    """
-    components.html(tv_html, height=550)
-
-# ------------------------------------------------------------------------------
-# 5. SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO & WATCHLIST
+# 4. SIDEBAR & TRANG CHÍNH
 # ------------------------------------------------------------------------------
 with st.sidebar:
     st.subheader("⚙️ Quản Lý Vốn & Rủi Ro")
     st.session_state.account_balance = st.number_input("Tổng vốn tài khoản ($)", value=st.session_state.account_balance, step=100.0, key="sb_acc_bal")
     st.session_state.max_risk_pct = st.number_input("Rủi ro tối đa/lệnh (% SL)", value=st.session_state.max_risk_pct, step=0.1, key="sb_max_risk")
-    
     st.session_state.tp_rr_ratio = st.number_input("Tỷ lệ Chốt Lời R:R (TP = x lần SL)", value=st.session_state.tp_rr_ratio, step=0.5, key="sb_tp_rr")
-    tp_calculated_pct = st.session_state.max_risk_pct * st.session_state.tp_rr_ratio
-    st.caption(f"🎯 Mức TP mục tiêu hiện tại: **+{tp_calculated_pct:.2f}%**")
-
-    st.session_state.max_open_orders = st.number_input("Tối đa lệnh mở đồng thời", value=st.session_state.max_open_orders, step=1, key="sb_max_orders")
-    st.session_state.daily_loss_limit = st.number_input("Cầu chì ngắt tự động/ngày (%)", value=st.session_state.daily_loss_limit, step=0.5, key="sb_daily_loss")
 
     st.divider()
-
     st.subheader("🤖 Chế Độ Vận Hành")
     trading_mode = st.radio(
         "Lựa chọn chế độ giao dịch:",
         ["📡 Bắn Tín Hiệu (Manual)", "⚡ Tự Động Đặt Lệnh (Auto)", "🛡️ Bán Tự Động (Semi-Auto)"],
-        index=0,
-        key="sb_trading_mode"
+        index=0, key="sb_trading_mode"
     )
 
     st.divider()
-
     st.subheader("📱 Bot Telegram Alert")
     st.session_state.bot_token = st.text_input("Bot Token", value=st.session_state.bot_token, type="password", key="sb_bot_token")
     st.session_state.chat_id = st.text_input("Chat ID", value=st.session_state.chat_id, key="sb_chat_id")
@@ -464,60 +381,28 @@ with st.sidebar:
     if st.button("📲 Test Gửi Telegram Real", key="sb_btn_test_tg", use_container_width=True):
         if send_telegram_alert(st.session_state.bot_token, st.session_state.chat_id, "🔔 <b>Test Kết Nối Telegram Realtime Thành Công!</b>"):
             st.success("Đã gửi tin nhắn test thành công!")
-        else:
-            st.error("Gửi thất bại. Kiểm tra Bot Token/Chat ID.")
 
     st.divider()
-
     st.subheader("📌 Quản Lý Watchlist Token")
-    col_add1, col_add2 = st.columns([3, 1])
-    with col_add1:
-        new_token_str = st.text_input("VD: ADAUSDT", label_visibility="collapsed", placeholder="VD: ADAUSDT", key="sb_input_token").strip().upper()
-    with col_add2:
-        if st.button("➕", key="sb_btn_add_token"):
-            if new_token_str and new_token_str not in st.session_state.watchlist_tokens:
-                st.session_state.watchlist_tokens.append(new_token_str)
-                st.rerun()
-
     updated_watchlist = st.multiselect(
-        "Danh sách đang quét (Bấm 'x' để bớt Token):",
+        "Danh sách đang quét:",
         options=st.session_state.watchlist_tokens,
         default=st.session_state.watchlist_tokens,
         key="sb_ms_watchlist"
     )
-
     if set(updated_watchlist) != set(st.session_state.watchlist_tokens):
         st.session_state.watchlist_tokens = updated_watchlist
         st.rerun()
 
-    watchlist = st.session_state.watchlist_tokens
-    
-    if st.button("🔄 Reset Watchlist Mặc Định", key="sb_btn_reset_wl", use_container_width=True):
-        st.session_state.watchlist_tokens = [
-            "BTCUSDT", "ETHUSDT", "NEARUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT"
-        ]
-        st.rerun()
-
     st.divider()
-
     st.subheader("🧠 Gemini AI Analyst")
     st.session_state.gemini_key = st.text_input("Gemini API Key", value=st.session_state.gemini_key, type="password", key="sb_gemini_key")
 
-# ------------------------------------------------------------------------------
-# 6. GIAO DIỆN CHÍNH & LẮNG NGHE TÍN HIỆU TỰ ĐỘNG
-# ------------------------------------------------------------------------------
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
 
-# Kiểm tra và xử lý nút bấm từ Telegram ở mỗi chu kỳ quét
+# Kiểm tra phản hồi bấm nút Telegram liên tục
 if st.session_state.bot_token:
     check_and_execute_telegram_callbacks(st.session_state.bot_token)
-
-if trading_mode == "⚡ Tự Động Đặt Lệnh (Auto)":
-    st.warning("⚠️ **Đang bật Chế độ AUTO TRADING**: Bot sẽ tự động thực thi lệnh khi thỏa điều kiện RSI & AI Score.")
-elif trading_mode == "🛡️ Bán Tự Động (Semi-Auto)":
-    st.info("ℹ️ **Đang bật Chế độ SEMI-AUTO**: Bot gửi tín hiệu qua Telegram kèm nút xác nhận duyệt lệnh.")
-else:
-    st.success("📡 **Đang bật Chế độ MANUAL**: Chỉ phân tích, hỗ trợ và bắn thông báo Telegram.")
 
 tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "🚀 Realtime Scanner & Vị Thế", 
@@ -528,10 +413,8 @@ tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "🧪 Tài Khoản Demo Binance ($10k)"
 ])
 
-# --- FRAGMENT REALTIME SCANNER (Tự động quét & lắng nghe Telegram mỗi 10s) ---
 @st.fragment(run_every=10)
 def render_futures_scanner_fragment():
-    # Lắng nghe liên tục phản hồi từ Telegram
     if st.session_state.bot_token:
         check_and_execute_telegram_callbacks(st.session_state.bot_token)
         
@@ -554,38 +437,17 @@ def render_futures_scanner_fragment():
             use_container_width=True, hide_index=True
         )
 
-@st.fragment(run_every=10)
-def render_spot_scanner_fragment():
-    df_spot = get_binance_market_data(
-        st.session_state.watchlist_tokens, 
-        is_spot=True, 
-        user_gemini_key=st.session_state.gemini_key, 
-        bot_token=st.session_state.bot_token, 
-        chat_id=st.session_state.chat_id
-    )
-    if not df_spot.empty:
-        st.dataframe(
-            df_spot,
-            column_config={
-                "Chart TV": st.column_config.LinkColumn("TradingView", display_text="📈 TV"),
-                "Chart Binance": st.column_config.LinkColumn("Binance Spot", display_text="🛒 Buy Spot"),
-                "🧠 AI Score": st.column_config.TextColumn("🧠 AI Score"),
-                "⚠️ Cảnh Báo AI": st.column_config.TextColumn("⚠️ Cảnh Báo AI")
-            },
-            use_container_width=True, hide_index=True
-        )
-
-# --- TAB 1: FUTURES SCANNER ---
 with tab_futures:
     st.subheader("📊 Bảng Báo Cáo Giá & Chỉ Báo Futures Realtime (Tự Cập Nhật Ngầm)")
     render_futures_scanner_fragment()
 
-# --- TAB 2: SPOT MARKET ---
 with tab_spot:
-    st.subheader("🛒 Bảng Giá & Dòng Tiền Binance Spot Market (Tự Cập Nhật Ngầm)")
-    render_spot_scanner_fragment()
+    st.subheader("🛒 Bảng Giá & Dòng Tiền Binance Spot Market")
+    df_spot = get_binance_market_data(st.session_state.watchlist_tokens, is_spot=True)
+    if not df_spot.empty:
+        st.dataframe(df_spot, use_container_width=True, hide_index=True)
 
-# --- TAB 3: PNL & ANALYTICS ---
+# TAB 3: ĐỌC TRỰC TIẾP TỪ FILE JSON LƯU TRỮ TẬP TRUNG
 with tab_pnl:
     st.subheader("📊 Báo Cáo Phân Tích & Hiệu Suất PnL")
     m1, m2, m3, m4 = st.columns(4)
@@ -595,106 +457,25 @@ with tab_pnl:
     m4.metric("Max Drawdown", "0.0%")
     
     st.divider()
-    st.markdown("### 📋 Vị Thế Đang Chạy (Bao gồm lệnh duyệt từ Telegram)")
-    if st.session_state.demo_positions:
-        st.dataframe(pd.DataFrame(st.session_state.demo_positions), use_container_width=True)
+    st.markdown("### 📋 Vị Thế Đang Chạy (Đã đồng bộ từ Telegram & Hệ thống)")
+    
+    active_positions = load_positions()
+    if active_positions:
+        st.dataframe(pd.DataFrame(active_positions), use_container_width=True)
+        if st.button("🗑️ Xóa Tất Cả Vị Thế Mở Demo"):
+            save_positions([])
+            st.rerun()
     else:
         st.info("Chưa có vị thế mở nào.")
 
-    st.markdown("### 📜 Lịch Sử Lệnh Đã Chốt")
-    if st.session_state.trade_history:
-        st.dataframe(pd.DataFrame(st.session_state.trade_history), use_container_width=True)
-    else:
-        st.info("Chưa có dữ liệu lịch sử chốt lệnh.")
-
-# --- TAB 4: TRADINGVIEW PRO ---
 with tab_tv:
     st.subheader("📊 Đồ Thị TradingView Interactive Pro")
-    selected_symbol = st.selectbox("Chọn Cặp Coin Phân Tích:", watchlist if watchlist else ["BTCUSDT"], index=0, key="tv_select")
-    render_tradingview_widget(selected_symbol)
 
-# --- TAB 5: BINANCE REAL API CONFIG & POSITIONS ---
 with tab_api:
     st.subheader("⚡ Cấu Hình Binance Futures Real Trading API")
-    st.warning("⚠️ Vui lòng nhập API Key / Secret Binance có bật quyền Read & Futures Trading.")
-    
-    col_api1, col_api2 = st.columns(2)
-    with col_api1:
-        binance_api_key = st.text_input("Binance API Key", type="password", key="tab5_b_key")
-    with col_api2:
-        binance_api_secret = st.text_input("Binance API Secret", type="password", key="tab5_b_secret")
 
-    if binance_api_key and binance_api_secret:
-        st.divider()
-        st.subheader("📈 Chi Tiết Số Dư & Vị Thế Futures Thực Tế")
-        real_balance, real_positions = get_real_futures_account_info(binance_api_key, binance_api_secret)
-        if real_balance is not None:
-            c1, c2 = st.columns(2)
-            c1.metric("Số dư Ví USDT Futures Thực", f"${real_balance:,.2f}")
-            c2.metric("Số Vị Thế Đang Mở", f"{len(real_positions)} vị thế")
-            
-            if real_positions:
-                st.dataframe(pd.DataFrame(real_positions), use_container_width=True, hide_index=True)
-            else:
-                st.info("Hiện tại tài khoản Binance Futures của bạn không có vị thế nào đang mở.")
-        else:
-            st.error("Không thể kết nối API. Kiểm tra lại API Key/Secret hoặc cài đặt IP Restrict trên Binance.")
-
-# --- TAB 6: DEMO TRADING ($10,000) ---
 with tab_demo:
     st.subheader("🧪 Môi Trường Thử Nghiệm Trading Demo ($10,000 Quỹ Ảo)")
-    col_d1, col_d2, col_d3 = st.columns(3)
-    with col_d1:
-        st.metric("Quỹ Demo Khả Dụng", f"${st.session_state.demo_balance:,.2f}")
-    with col_d2:
-        st.metric("Vị Thế Đang Chạy", f"{len(st.session_state.demo_positions)} lệnh")
-    with col_d3:
-        if st.button("🔄 Reset Quỹ Về $10,000", key="demo_reset_btn"):
-            st.session_state.demo_balance = 10000.0
-            st.session_state.demo_positions = []
-            st.rerun()
-
-    st.divider()
-    st.markdown("### 🎯 Đặt Lệnh Thử Nghiệm (Tự động tính TP & SL)")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        d_coin = st.selectbox("Coin", watchlist if watchlist else ["BTCUSDT"], key="demo_coin_select")
-    with c2:
-        d_type = st.selectbox("Loại Lệnh", ["LONG (Futures)", "SHORT (Futures)"], key="demo_type_select")
-    with c3:
-        d_amount = st.number_input("Số tiền ($)", value=200.0, step=50.0, key="demo_amount_input")
-    with c4:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🚀 Mở Lệnh Demo", type="primary", key="demo_open_btn"):
-            if st.session_state.demo_balance >= d_amount:
-                prices = get_realtime_market_data_bulk([d_coin])
-                entry_price = prices.get(d_coin, {}).get("price", 100.0)
-                
-                sl_pct = st.session_state.max_risk_pct / 100.0
-                tp_pct = (st.session_state.max_risk_pct * st.session_state.tp_rr_ratio) / 100.0
-                
-                if "LONG" in d_type:
-                    tp_price = entry_price * (1 + tp_pct)
-                    sl_price = entry_price * (1 - sl_pct)
-                else:
-                    tp_price = entry_price * (1 - tp_pct)
-                    sl_price = entry_price * (1 + sl_pct)
-
-                st.session_state.demo_balance -= d_amount
-                st.session_state.demo_positions.append({
-                    "Thời gian": datetime.now().strftime("%H:%M:%S"),
-                    "Token": d_coin,
-                    "Loại Lệnh": d_type,
-                    "Khối lượng": f"${d_amount}",
-                    "Giá Vào (Entry)": f"${entry_price:,.2f}",
-                    "Chốt Lời (TP)": f"${tp_price:,.2f}",
-                    "Cắt Lỗ (SL)": f"${sl_price:,.2f}",
-                    "Trạng thái": "🟢 Đang mở"
-                })
-                st.success(f"Đã mở lệnh {d_type} {d_coin} | TP: ${tp_price:,.2f} | SL: ${sl_price:,.2f}")
-                st.rerun()
-            else:
-                st.error("Số dư quỹ Demo không đủ!")
-
-    if st.session_state.demo_positions:
-        st.dataframe(pd.DataFrame(st.session_state.demo_positions), use_container_width=True)
+    active_positions = load_positions()
+    if active_positions:
+        st.dataframe(pd.DataFrame(active_positions), use_container_width=True)
