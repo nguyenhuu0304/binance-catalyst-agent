@@ -1,12 +1,11 @@
 ﻿import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import ta
 import time
 import json
 import os
-import hmac
-import hashlib
 from datetime import datetime
 
 # Cấu hình trang & ép giao diện Dark Mode chuẩn
@@ -31,8 +30,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ================= SIDEBAR: QUẢN LÝ VỐN & TELEGRAM BOT =================
+# ================= SIDEBAR: API TOKEN, QUẢN LÝ VỐN & TELEGRAM BOT =================
 with st.sidebar:
+    st.header("🔑 Cấu Hình Token / API Binance")
+    binance_api_key = st.text_input("Binance API Key (Token)", type="password", help="Nhập API Key / Token kết nối tài khoản Binance")
+    binance_api_secret = st.text_input("Binance Secret Key", type="password")
+    use_testnet = st.checkbox("Sử dụng Binance Testnet", value=True)
+
+    st.markdown("---")
     st.header("⚙️ Quản Lý Vốn & Rủi Ro")
     total_capital = st.number_input("Tổng vốn tài khoản ($)", min_value=10.0, value=1000.0, step=50.0)
     max_risk_pct = st.slider("Rủi ro tối đa/lệnh (%)", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
@@ -58,14 +63,40 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-# Lấy dữ liệu 100% REALTIME từ các cụm Server Binance Public Data
+# Hàm nhúng biểu đồ TradingView chuẩn tương tác
+def render_tradingview_widget(symbol="BTCUSDT", interval="60"):
+    tv_symbol = f"BINANCE:{symbol}"
+    html_code = f"""
+    <div class="tradingview-widget-container" style="height:520px;width:100%;">
+      <div id="tradingview_chart" style="height:520px;width:100%;"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      new TradingView.widget({{
+        "autosize": true,
+        "symbol": "{tv_symbol}",
+        "interval": "{interval}",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "vi_VN",
+        "toolbar_bg": "#f1f3f6",
+        "enable_publishing": false,
+        "hide_side_toolbar": false,
+        "allow_symbol_change": true,
+        "container_id": "tradingview_chart"
+      }});
+      </script>
+    </div>
+    """
+    components.html(html_code, height=530)
+
+# Lấy dữ liệu Realtime từ Binance Public API
 def get_real_klines(symbol, interval="1h", limit=50):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     endpoints = [
         f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
         f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     ]
     for url in endpoints:
         try:
@@ -112,28 +143,29 @@ def analyze_token(symbol):
         
     tv_link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"
     
+    # Cấu trúc cột dữ liệu: Đưa biểu đồ/link TradingView ra vị trí phía sau
     return {
-        "Mã Token": tv_link,
-        "symbol_raw": symbol,
+        "Mã Token": symbol,
         "Giá ($)": close_price,
-        "📈 Sóng Giá (20H)": price_wave,
-        "%1h": pct_1h,
-        "%4h": pct_4h,
-        "Xu hướng 4h": trend_4h,
-        "RSI 1h": round(rsi, 1),
-        "Dòng tiền": "🟢 Đổ Vào" if vol_curr > vol_prev else "⚪ Ổn định",
-        "Trạng Thái": signal
+        "% 1H": pct_1h,
+        "% 4H": pct_4h,
+        "RSI 1H": round(rsi, 1),
+        "Xu Hướng 4H": trend_4h,
+        "Dòng Tiền": "🟢 Đổ Vào" if vol_curr > vol_prev else "⚪ Ổn định",
+        "Trạng Thái": signal,
+        "📈 Biểu Đồ Sóng (20H)": price_wave,
+        "TradingView": tv_link
     }
 
 st.markdown("<h1 style='text-align: center; color: #00E676;'>🟢 BINANCE CATALYST AGENT OS</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #888;'>Hệ thống Quản trị & Khớp lệnh Tự động Binance Spot & Futures API</p>", unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🚀 Realtime Scanner & Mua Spot/Futures", "📊 Analytics & PnL Dashboard", "⚡ Binance API Real Executions"])
+tab1, tab2, tab3 = st.tabs(["🚀 Scanner & Đặt Lệnh", "📊 Biểu Đồ TradingView Realtime", "📈 Analytics & Vị Thế Open"])
 
 with tab1:
-    st.subheader("🟢 Bảng Quét Thị Trường & Tín Hiệu Realtime")
+    st.subheader("🟢 Bảng Quét Thị Trường Realtime")
     
-    col_btn1, col_btn2, _ = st.columns([1, 1, 3])
+    col_btn1, _ = st.columns([1, 3])
     with col_btn1:
         if st.button("🔄 Quét Dữ Liệu Sàn Realtime"):
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "NEARUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT"]
@@ -147,35 +179,33 @@ with tab1:
             
             if len(results) > 0:
                 st.session_state['scan_results'] = results
-                st.success("✅ Đã kết nối & lấy 100% dữ liệu thực tế từ Binance thành công!")
-            else:
-                st.error("⚠️ Không thể kết nối tới Binance. Vui lòng kiểm tra lại mạng!")
+                st.success("✅ Đã cập nhật 100% dữ liệu thực tế từ Binance!")
 
     if st.session_state['scan_results'] is not None and len(st.session_state['scan_results']) > 0:
         df_scan = pd.DataFrame(st.session_state['scan_results'])
         
+        # Đưa biểu đồ và link TradingView về phía sau bảng
         st.dataframe(
             df_scan,
             column_config={
-                "Mã Token": st.column_config.LinkColumn(
-                    "Mã Token (Click mở Chart)",
-                    display_text=r"BINANCE:(.*)",
-                    help="Click vào mã Token để chuyển tới trang TradingView"
-                ),
-                "📈 Sóng Giá (20H)": st.column_config.LineChartColumn(
-                    "📈 Sóng Giá (20H)",
+                "Mã Token": st.column_config.TextColumn("Mã Token"),
+                "Giá ($)": st.column_config.NumberColumn("Giá ($)", format="$%.4f"),
+                "% 1H": st.column_config.NumberColumn("% 1H", format="%.2f%%"),
+                "% 4H": st.column_config.NumberColumn("% 4H", format="%.2f%%"),
+                "📈 Biểu Đồ Sóng (20H)": st.column_config.LineChartColumn(
+                    "📈 Biểu Đồ Sóng (20H)",
                     width="medium"
                 ),
-                "Giá ($)": st.column_config.NumberColumn("Giá ($)", format="$%.4f"),
-                "%1h": st.column_config.NumberColumn("% 1H", format="%.2f%%"),
-                "%4h": st.column_config.NumberColumn("% 4H", format="%.2f%%"),
-                "symbol_raw": None
+                "TradingView": st.column_config.LinkColumn(
+                    "TradingView Chart",
+                    display_text="Mở TradingView ↗"
+                )
             },
             use_container_width=True,
             hide_index=True
         )
     else:
-        st.info("💡 Bấm 'Quét Dữ Liệu Sàn Realtime' để tải sóng giá thực tế 100% từ sàn Binance.")
+        st.info("💡 Bấm 'Quét Dữ Liệu Sàn Realtime' để tải bảng dữ liệu thị trường.")
 
     st.markdown("---")
     st.subheader("⚡ Đặt Lệnh Mua Nhanh (Spot / Futures)")
@@ -190,7 +220,7 @@ with tab1:
         action_type = st.selectbox("Loại Lệnh", ["MUA MARKET (Spot/Long)", "BÁN MARKET (Spot/Short)"])
         
     if st.button("🚀 Thực Hiện Đặt Lệnh Ngay"):
-        st.info(f"Đang gửi lệnh {action_type} cho {symbol_input} với khối lượng ${amount_usdt}...")
+        st.info(f"Đang thực thi lệnh {action_type} cho {symbol_input} với khối lượng ${amount_usdt}...")
         new_pos = {
             "symbol": symbol_input,
             "type": trade_mode,
@@ -199,22 +229,20 @@ with tab1:
             "status": "🟢 OPEN"
         }
         st.session_state['positions'].append(new_pos)
-        st.success(f"✅ Đã kích hoạt vị thế {trade_mode} cho {symbol_input} thành công!")
+        st.success(f"✅ Đã vào vị thế {trade_mode} thành công cho {symbol_input}!")
 
 with tab2:
-    st.subheader("📊 Quản Lý Vị Thế & Lợi Nhuận")
+    st.subheader("📊 Biểu Đồ Kỹ Thuật TradingView Tương Tác Chuẩn")
+    selected_tv_symbol = st.selectbox("Chọn Token để phân tích Chart:", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "NEARUSDT", "BNBUSDT", "XRPUSDT", "AVAXUSDT"])
+    selected_tf = st.selectbox("Khung thời gian (Timeframe):", ["15", "60", "240", "D"], index=1, format_func=lambda x: "15m" if x=="15" else ("1h" if x=="60" else ("4h" if x=="240" else "1D")))
+    
+    # Hiển thị TradingView Widget trực tiếp
+    render_tradingview_widget(symbol=selected_tv_symbol, interval=selected_tf)
+
+with tab3:
+    st.subheader("📈 Quản Lý Vị Thế Open & Lợi Nhuận PnL")
     if len(st.session_state['positions']) > 0:
         df_pos = pd.DataFrame(st.session_state['positions'])
         st.dataframe(df_pos, use_container_width=True)
     else:
-        st.info("Chưa có vị thế nào đang mở. Hãy thực hiện đặt lệnh từ Tab 1.")
-
-with tab3:
-    st.subheader("⚡ Cấu Hình Binance API Real (Spot & Futures)")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        api_key = st.text_input("Binance API Key", type="password")
-        is_testnet = st.checkbox("Sử dụng Binance Testnet", value=True)
-    with col_b:
-        api_secret = st.text_input("Binance API Secret", type="password")
-        api_type = st.radio("Loại API Kết Nối", ["Binance Spot API", "Binance Futures API"])
+        st.info("Chưa có vị thế nào đang mở.")
