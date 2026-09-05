@@ -9,75 +9,38 @@ import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Binance Catalyst OS - Spot & Futures Edition", page_icon="🟢", layout="wide")
+# Cấu hình trang & ép giao diện Dark Mode chuẩn
+st.set_page_config(page_title="Binance Catalyst OS", page_icon="🟢", layout="wide")
 
-CLOSED_TRADES_FILE = "closed_trades.json"
-
-def load_json_file(filename, default_val):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return default_val
-    return default_val
-
-def save_json_file(filename, data):
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+    .stButton>button {
+        background-color: #00E676 !important;
+        color: #000000 !important;
+        font-weight: bold !important;
+        border: none !important;
+    }
+    .stButton>button:hover {
+        background-color: #00C853 !important;
+        color: #FFFFFF !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 if 'positions' not in st.session_state:
     st.session_state['positions'] = []
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-def send_binance_signed_request(endpoint, method="GET", params=None, api_key="", api_secret="", is_testnet=True, is_futures=False):
-    if not api_key or not api_secret:
-        return False, "Thiếu API Key hoặc Secret Key"
-        
-    if is_futures:
-        base_url = "https://testnet.binancefuture.com" if is_testnet else "https://fapi.binance.com"
-    else:
-        base_url = "https://testnet.binance.vision" if is_testnet else "https://api.binance.com"
-        
-    url = f"{base_url}{endpoint}"
-    if params is None:
-        params = {}
-    
-    params['timestamp'] = int(time.time() * 1000)
-    query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items())])
-    
-    signature = hmac.new(
-        api_secret.encode('utf-8'),
-        query_string.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    
-    full_url = f"{url}?{query_string}&signature={signature}"
-    headers = {"X-MBX-APIKEY": api_key}
-    
-    try:
-        if method == "GET":
-            res = requests.get(full_url, headers=headers, timeout=5)
-        elif method == "POST":
-            res = requests.post(full_url, headers=headers, timeout=5)
-        else:
-            return False, "Phương thức không hỗ trợ"
-            
-        if res.status_code == 200:
-            return True, res.json()
-        else:
-            return False, res.text
-    except Exception as e:
-        return False, str(e)
-
 def get_klines(symbol, interval="1h", limit=50):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
             df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
@@ -142,7 +105,7 @@ with tab1:
     
     col_btn1, col_btn2, _ = st.columns([1, 1, 3])
     with col_btn1:
-        if st.button("🔄 Quét Thị Trường Ngay", type="primary"):
+        if st.button("🔄 Quét Thị Trường Ngay"):
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "NEARUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT"]
             results = []
             bar = st.progress(0)
@@ -151,10 +114,14 @@ with tab1:
                 if res:
                     results.append(res)
                 bar.progress((i + 1) / len(symbols))
-            st.session_state['scan_results'] = results
-            st.success("✅ Đã cập nhật sóng giá và dữ liệu mới nhất!")
+            
+            if len(results) > 0:
+                st.session_state['scan_results'] = results
+                st.success("✅ Đã cập nhật sóng giá và dữ liệu mới nhất!")
+            else:
+                st.error("⚠️ Không lấy được dữ liệu từ Binance. Vui lòng thử lại!")
 
-    if st.session_state['scan_results']:
+    if st.session_state['scan_results'] is not None and len(st.session_state['scan_results']) > 0:
         df_scan = pd.DataFrame(st.session_state['scan_results'])
         
         st.dataframe(
@@ -192,7 +159,7 @@ with tab1:
     with c4:
         action_type = st.selectbox("Loại Lệnh", ["MUA MARKET (Spot/Long)", "BÁN MARKET (Spot/Short)"])
         
-    if st.button("🚀 Thực Hiện Đặt Lệnh Ngay", type="primary"):
+    if st.button("🚀 Thực Hiện Đặt Lệnh Ngay"):
         st.info(f"Đang gửi lệnh {action_type} cho {symbol_input} với khối lượng ${amount_usdt}...")
         new_pos = {
             "symbol": symbol_input,
@@ -214,25 +181,10 @@ with tab2:
 
 with tab3:
     st.subheader("⚡ Cấu Hình Binance API Real (Spot & Futures)")
-    
-    st.warning("⚠️ Kết nối API chính thức giúp bạn tự động hóa giao dịch Spot và Futures từ thuật toán.")
-    
     col_a, col_b = st.columns(2)
     with col_a:
         api_key = st.text_input("Binance API Key", type="password")
-        is_testnet = st.checkbox("Sử dụng Binance Testnet (An toàn thử nghiệm)", value=True)
+        is_testnet = st.checkbox("Sử dụng Binance Testnet", value=True)
     with col_b:
         api_secret = st.text_input("Binance API Secret", type="password")
         api_type = st.radio("Loại API Kết Nối", ["Binance Spot API", "Binance Futures API"])
-        
-    if st.button("🔑 Kiểm Tra Kết Nối API"):
-        if not api_key or not api_secret:
-            st.error("Vui lòng điền đầy đủ API Key và API Secret!")
-        else:
-            is_futures = (api_type == "Binance Futures API")
-            endpoint = "/fapi/v2/account" if is_futures else "/api/v3/account"
-            success, res = send_binance_signed_request(endpoint, "GET", None, api_key, api_secret, is_testnet, is_futures)
-            if success:
-                st.success(f"🟢 Kết nối thành công tới {api_type}! Tài khoản đã xác thực.")
-            else:
-                st.error(f"❌ Kết nối thất bại: {res}")
