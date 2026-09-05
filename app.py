@@ -7,8 +7,7 @@ import json
 import os
 import hmac
 import hashlib
-import random
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Cấu hình trang & ép giao diện Dark Mode chuẩn
 st.set_page_config(page_title="Binance Catalyst OS", page_icon="🟢", layout="wide")
@@ -37,54 +36,59 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-# Lấy dữ liệu Klines (Thử nhiều Endpoint & Dự phòng Fallback khi bị chặn IP Cloud)
-def get_klines(symbol, interval="1h", limit=50):
+# Lấy dữ liệu 100% REALTIME từ các cụm Server Binance Public Data (Không bị chặn IP Cloud)
+def get_real_klines(symbol, interval="1h", limit=50):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    urls = [
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    
+    endpoints = [
+        f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://api3.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
     ]
-    for url in urls:
+    
+    for url in endpoints:
         try:
-            res = requests.get(url, headers=headers, timeout=3)
+            res = requests.get(url, headers=headers, timeout=4)
             if res.status_code == 200:
                 data = res.json()
-                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
-                df['close'] = df['close'].astype(float)
-                df['volume'] = df['volume'].astype(float)
-                return df
+                if isinstance(data, list) and len(data) > 0:
+                    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+                    df['close'] = df['close'].astype(float)
+                    df['volume'] = df['volume'].astype(float)
+                    return df
         except Exception:
             continue
     return None
 
 def analyze_token(symbol):
-    df_1h = get_klines(symbol, "1h", 50)
+    df_1h = get_real_klines(symbol, "1h", 50)
+    df_4h = get_real_klines(symbol, "4h", 50)
     
-    base_prices = {"BTCUSDT": 92000.0, "ETHUSDT": 2500.0, "SOLUSDT": 180.0, "BNBUSDT": 620.0, "XRPUSDT": 2.2, "ADAUSDT": 0.8, "NEARUSDT": 5.5, "AVAXUSDT": 30.0, "LINKUSDT": 18.0, "DOGEUSDT": 0.25}
-    base_p = base_prices.get(symbol, 100.0)
-
-    if df_1h is not None and len(df_1h) >= 20:
-        close_price = df_1h['close'].iloc[-1]
-        pct_1h = ((close_price - df_1h['close'].iloc[-2]) / df_1h['close'].iloc[-2]) * 100
-        pct_4h = ((close_price - df_1h['close'].iloc[0]) / df_1h['close'].iloc[0]) * 100
-        price_wave = df_1h['close'].tail(20).tolist()
-        rsi = ta.momentum.RSIIndicator(df_1h['close'], window=14).rsi().iloc[-1]
-        if pd.isna(rsi): rsi = 55.0
-        vol_curr = df_1h['volume'].iloc[-1]
-        vol_prev = df_1h['volume'].iloc[-2]
-    else:
-        # Tự động khởi tạo sóng giá thực tế dự phòng khi Cloud IP bị chặn
-        close_price = base_p * random.uniform(0.985, 1.015)
-        pct_1h = random.uniform(-0.8, 2.5)
-        pct_4h = random.uniform(-1.5, 4.8)
-        wave_start = close_price * (1 - pct_1h/100)
-        price_wave = [wave_start + (close_price - wave_start)*(i/19) + random.uniform(-base_p*0.003, base_p*0.003) for i in range(20)]
-        rsi = random.uniform(50.0, 65.0)
-        vol_curr, vol_prev = 100, 80
-
-    trend_4h = "🟢 BULLISH" if pct_4h > 0 else "⚪ SIDEWAYS"
+    if df_1h is None or len(df_1h) < 20 or df_4h is None or len(df_4h) < 20:
+        return None
+        
+    close_price = df_1h['close'].iloc[-1]
+    pct_1h = ((close_price - df_1h['close'].iloc[-2]) / df_1h['close'].iloc[-2]) * 100
+    pct_4h = ((close_price - df_4h['close'].iloc[-2]) / df_4h['close'].iloc[-2]) * 100
     
-    if rsi > 54 and pct_1h > 0:
+    # Lấy 20 nến giá thực tế 100% gần nhất từ sàn Binance để làm đường biểu đồ sóng
+    price_wave = df_1h['close'].tail(20).tolist()
+    
+    rsi = ta.momentum.RSIIndicator(df_1h['close'], window=14).rsi().iloc[-1]
+    if pd.isna(rsi):
+        rsi = 50.0
+        
+    ema_fast = ta.trend.EMAIndicator(df_4h['close'], window=9).ema_indicator().iloc[-1]
+    ema_slow = ta.trend.EMAIndicator(df_4h['close'], window=21).ema_indicator().iloc[-1]
+    
+    trend_4h = "🟢 BULLISH" if ema_fast > ema_slow else "⚪ SIDEWAYS"
+    
+    vol_curr = df_1h['volume'].iloc[-1]
+    vol_prev = df_1h['volume'].iloc[-2]
+    
+    if vol_curr > vol_prev * 1.2 and rsi > 52 and ema_fast > ema_slow:
         signal = "🟢 ĐỦ ĐIỀU KIỆN MUA SPOT"
     elif rsi > 50:
         signal = "🟢 TĂNG TRƯỜNG"
@@ -112,11 +116,11 @@ st.markdown("<p style='text-align: center; color: #888;'>Hệ thống Quản tr�
 tab1, tab2, tab3 = st.tabs(["🚀 Realtime Scanner & Mua Spot/Futures", "📊 Analytics & PnL Dashboard", "⚡ Binance API Real Executions"])
 
 with tab1:
-    st.subheader("🟢 Bảng Quét Thị Trường & Tín Hiệu Tự Động")
+    st.subheader("🟢 Bảng Quét Thị Trường & Tín Hiệu Realtime")
     
     col_btn1, col_btn2, _ = st.columns([1, 1, 3])
     with col_btn1:
-        if st.button("🔄 Quét Thị Trường Ngay"):
+        if st.button("🔄 Quét Dữ Liệu Sàn Realtime"):
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "NEARUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT"]
             results = []
             bar = st.progress(0)
@@ -126,8 +130,11 @@ with tab1:
                     results.append(res)
                 bar.progress((i + 1) / len(symbols))
             
-            st.session_state['scan_results'] = results
-            st.success("✅ Đã cập nhật sóng giá và dữ liệu mới nhất!")
+            if len(results) > 0:
+                st.session_state['scan_results'] = results
+                st.success("✅ Đã kết nối & lấy 100% dữ liệu thực tế từ Binance thành công!")
+            else:
+                st.error("⚠️ Không thể kết nối tới Binance. Vui lòng kiểm tra lại mạng!")
 
     if st.session_state['scan_results'] is not None and len(st.session_state['scan_results']) > 0:
         df_scan = pd.DataFrame(st.session_state['scan_results'])
@@ -153,7 +160,7 @@ with tab1:
             hide_index=True
         )
     else:
-        st.info("💡 Bấm 'Quét Thị Trường Ngay' để tải sóng giá thực tế và tín hiệu.")
+        st.info("💡 Bấm 'Quét Dữ Liệu Sàn Realtime' để tải sóng giá thực tế 100% từ sàn Binance.")
 
     st.markdown("---")
     st.subheader("⚡ Đặt Lệnh Mua Nhanh (Spot / Futures)")
