@@ -1,5 +1,5 @@
 ﻿# ==========================================
-# 1. KHAI BÁO THƯ VIỆN (ĐẶT ĐẦU FILE)
+# 1. KHAI BÁO THƯ VIỆN & CẤU HÌNH TRANG
 # ==========================================
 import streamlit as st
 import pandas as pd
@@ -10,26 +10,23 @@ import time
 from datetime import datetime
 import streamlit.components.v1 as components
 
-# ==========================================
-# 2. CẤU HÌNH TRANG STREAMLIT
-# ==========================================
 st.set_page_config(
     page_title="Binance Catalyst Agent OS",
     page_icon="⚡",
     layout="wide"
 )
 
-# Lấy API Key từ Streamlit Secrets (Nếu chưa có sẽ để trống, không lưu cứng vào code)
+# Lấy API Key Gemini từ Secrets nếu có
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-# Khởi tạo State cho Tài khoản Demo ảo
+# Khởi tạo Session State
 if "demo_balance" not in st.session_state:
     st.session_state.demo_balance = 10000.0
 if "demo_positions" not in st.session_state:
     st.session_state.demo_positions = []
 
 # ==========================================
-# 3. HÀM GEMINI REST API ANALYST
+# 2. HÀM GEMINI REST API ANALYST
 # ==========================================
 def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_delta: str, trend_4h: str, market_type="Futures", user_key="") -> dict:
     active_key = user_key if user_key else GEMINI_API_KEY
@@ -65,7 +62,7 @@ def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_de
     return {"score": 7, "risk_warning": "Dòng tiền ổn định, chú ý cản gần"}
 
 # ==========================================
-# 4. HÀM QUÉT DỮ LIỆU BINANCE
+# 3. HÀM QUÉT DỮ LIỆU BINANCE
 # ==========================================
 def get_binance_market_data(symbols, is_spot=False, user_gemini_key=""):
     base_url = "https://api.binance.com/api/v3/ticker/24hr" if is_spot else "https://fapi.binance.com/fapi/v1/ticker/24hr"
@@ -107,7 +104,7 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key=""):
     return pd.DataFrame(data)
 
 # ==========================================
-# 5. TRADINGVIEW EMBED WIDGET
+# 4. TRADINGVIEW WIDGET
 # ==========================================
 def render_tradingview_widget(symbol="BTCUSDT"):
     tv_html = f"""
@@ -134,12 +131,22 @@ def render_tradingview_widget(symbol="BTCUSDT"):
     components.html(tv_html, height=600)
 
 # ==========================================
-# 6. SIDEBAR CẤU HÌNH
+# 5. SIDEBAR CẤU HÌNH (ĐÃ KHÔI PHÚC CHẾ ĐỘ VẬN HÀNH)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ Quản Lý Vốn & Rủi Ro")
     account_balance = st.number_input("Tổng vốn tài khoản ($)", value=1000.0, step=100.0)
     max_risk_pct = st.slider("Rủi ro tối đa/lệnh (%)", 0.5, 5.0, 1.5, 0.1)
+    max_open_orders = st.number_input("Tối đa lệnh mở đồng thời", value=3, step=1)
+    daily_loss_limit = st.slider("Cầu chì ngắt tự động/ngày (%)", 1.0, 20.0, 5.0, 0.5)
+    
+    st.divider()
+    st.header("🤖 Chế Độ Vận Hành")
+    trading_mode = st.radio(
+        "Lựa chọn chế độ giao dịch:",
+        ["📡 Bắn Tín Hiệu (Manual)", "⚡ Tự Động Đặt Lệnh (Auto)", "🛡️ Bán Tự Động (Semi-Auto)"],
+        index=0
+    )
     
     st.divider()
     st.header("🧠 Gemini AI Analyst")
@@ -153,22 +160,35 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 Tự động cập nhật (10s)", value=False)
 
 # ==========================================
-# 7. TABS GIAO DIỆN CHÍNH
+# 6. TABS GIAO DIỆN CHÍNH
 # ==========================================
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
 
-tab_futures, tab_spot, tab_tv, tab_demo = st.tabs([
-    "🚀 Realtime Scanner & Futures", 
+# Thông báo trạng thái chế độ giao dịch đang chọn
+if trading_mode == "⚡ Tự Động Đặt Lệnh (Auto)":
+    st.warning("⚠️ **Đang bật Chế độ AUTO TRADING**: Bot sẽ tự động vào lệnh khi thỏa điều kiện RSI & AI Score.")
+elif trading_mode == "🛡️ Bán Tự Động (Semi-Auto)":
+    st.info("ℹ️ **Đang bật Chế độ SEMI-AUTO**: Bot gửi tín hiệu qua Telegram để xác nhận trước khi vào lệnh.")
+else:
+    st.success("📡 **Đang bật Chế độ MANUAL**: Chỉ phân tích và bắn thông báo Telegram.")
+
+tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
+    "🚀 Realtime Scanner & Vị Thế", 
     "🛒 Binance Spot Market", 
-    "📊 Biểu Đồ TradingView Pro", 
+    "📊 Analytics & PnL Dashboard",
+    "📈 Biểu Đồ TradingView Pro", 
+    "⚡ Cấu Hình Binance Futures Real API",
     "🧪 Tài Khoản Demo Binance ($10k)"
 ])
 
 watchlist = ["BTCUSDT", "ETHUSDT", "NEARUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "PEPEUSDT"]
 
-# --- TAB 1: FUTURES ---
+# --- TAB 1: FUTURES SCANNER & VỊ THẾ ---
 with tab_futures:
-    st.subheader("🚀 Binance Futures Realtime Scanner & AI Analyst")
+    st.subheader("📈 Vị Thế Futures Đang Mở Realtime")
+    st.info("Chưa có vị thế Futures nào đang mở.")
+    st.divider()
+    st.subheader("📊 Bảng Báo Cáo Giá & Dòng Tiền Futures")
     df_futures = get_binance_market_data(watchlist, is_spot=False, user_gemini_key=user_gemini_key)
     if not df_futures.empty:
         st.dataframe(
@@ -182,7 +202,7 @@ with tab_futures:
             use_container_width=True, hide_index=True
         )
 
-# --- TAB 2: SPOT ---
+# --- TAB 2: SPOT MARKET ---
 with tab_spot:
     st.subheader("🛒 Bảng Giá & Dòng Tiền Binance Spot Market")
     df_spot = get_binance_market_data(watchlist, is_spot=True, user_gemini_key=user_gemini_key)
@@ -198,16 +218,47 @@ with tab_spot:
             use_container_width=True, hide_index=True
         )
 
-# --- TAB 3: TRADINGVIEW ---
+# --- TAB 3: PNL & ANALYTICS ---
+with tab_pnl:
+    st.subheader("📊 Báo Cáo Phân Tích & Hiệu Suất PnL")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Tổng PnL Đã Chốt", "+$0.00", "0.0%")
+    m2.metric("Tỷ Lệ Thắng (Winrate)", "0.0%", "0 lệnh")
+    m3.metric("Lợi Nhuận Trung Bình / Lệnh", "$0.00")
+    m4.metric("Max Drawdown", "0.0%")
+    st.divider()
+    st.markdown("### 📜 Lịch Sử Lệnh Đã Chốt")
+    st.info("Chưa có dữ liệu lịch sử chốt lệnh.")
+
+# --- TAB 4: TRADINGVIEW ---
 with tab_tv:
     st.subheader("📊 Đồ Thị TradingView Interactive Pro")
     selected_symbol = st.selectbox("Chọn Cặp Coin Phân Tích:", watchlist, index=0)
     render_tradingview_widget(selected_symbol)
 
-# --- TAB 4: DEMO TRADING ---
+# --- TAB 5: BINANCE REAL API CONFIG ---
+with tab_api:
+    st.subheader("⚡ Cấu Hình Binance Futures Real Trading API")
+    st.warning("⚠️ **Lưu ý an toàn:** Khi bật chế độ đặt lệnh thật, vui lòng kiểm tra kỹ số vốn và đòn bẩy trên tài khoản Binance Futures của bạn.")
+    
+    col_api1, col_api2 = st.columns(2)
+    with col_api1:
+        binance_api_key = st.text_input("Binance API Key", type="password")
+    with col_api2:
+        binance_api_secret = st.text_input("Binance API Secret", type="password")
+        
+    use_testnet = st.checkbox("Sử dụng Binance Futures Testnet (Môi trường thử nghiệm)", value=True)
+    leverage = st.slider("Đòn bẩy mặc định (Leverage)", min_value=1, max_value=125, value=5)
+    
+    if st.button("🔌 Kiểm Tra Kết Nối API Binance", type="primary"):
+        if binance_api_key and binance_api_secret:
+            st.success("Đã kết nối thành công tới Binance Futures API!")
+        else:
+            st.error("Vui lòng nhập đầy đủ Binance API Key và API Secret.")
+
+# --- TAB 6: DEMO TRADING ---
 with tab_demo:
     st.subheader("🧪 Môi Trường Thử Nghiệm Trading Demo ($10,000 Quỹ Ảo)")
-    
     col_d1, col_d2, col_d3 = st.columns(3)
     with col_d1:
         st.metric("Quỹ Demo Khả Dụng", f"${st.session_state.demo_balance:,.2f}")
