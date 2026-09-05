@@ -51,7 +51,7 @@ with st.sidebar:
     bot_mode = st.radio(
         "🔴 Chế độ vận hành khi có tín hiệu:",
         ["📱 Phê duyệt qua Telegram (Nút bấm 2 chiều)", "⚡ Auto 100% (Tự động vào lệnh)"],
-        index=1
+        index=0
     )
     
     auto_track = st.checkbox("🔄 Tự động theo dõi (mỗi 10s)", value=True)
@@ -63,38 +63,52 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-# Hàm gửi tín hiệu qua Telegram Bot
-def send_telegram_signal(token, chat_id, symbol, signal, price, rsi, trend):
+# Hàm gửi tín hiệu chuẩn có nút tương tác 2 chiều (Inline Keyboard)
+def send_telegram_interactive_signal(token, chat_id, symbol, price, sl, tp, volume, vol_delta, time_str):
     if not token or not chat_id:
         return False, "Chưa nhập Bot Token hoặc Chat ID"
     
+    coin_name = symbol.replace("USDT", "")
     text = (
-        f"🚀 *BINANCE CATALYST SIGNAL*\n\n"
-        f"🪙 *Token:* #{symbol}\n"
-        f"💵 *Giá Hiện tại:* ${price:.4f}\n"
-        f"📊 *RSI 1H:* {rsi}\n"
-        f"📈 *Xu hướng 4H:* {trend}\n"
-        f"⚡ *Tín hiệu:* {signal}\n"
-        f"⏰ *Thời gian:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"🎯 *[TÍN HIỆU MỚI DETECTED]*\n\n"
+        f"🟢 *Mã Token:* {symbol}\n"
+        f"💵 *Giá Entry:* ${price:.2f}\n"
+        f"🛑 *Cắt Lỗ (SL):* ${sl:.4f}\n"
+        f"🎯 *Chốt Lời (TP):* ${tp:.4f}\n"
+        f"📊 *Khối Lượng:* {volume:.2f} {coin_name}\n"
+        f"🔥 *Dòng tiền mập:* +{vol_delta:.1f}% (Vol Delta)\n"
+        f"⏰ *Thời Gian:* {time_str}\n\n"
+        f"👉 *Thỏa 5 bộ lọc kỹ thuật. Bạn có phê duyệt không?*"
     )
+    
+    # Nút bấm 2 chiều xác nhận phê duyệt mua hoặc bỏ qua
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ ĐỒNG Ý MUA", "callback_data": f"APPROVE_BUY_{symbol}_{price}"},
+                {"text": "❌ BỎ QUA", "callback_data": f"REJECT_{symbol}"}
+            ]
+        ]
+    }
     
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
+        "reply_markup": json.dumps(reply_markup)
     }
     
     try:
         res = requests.post(url, json=payload, timeout=5)
         if res.status_code == 200:
-            return True, "✅ Đã bắn Telegram thành công!"
+            return True, "✅ Đã gửi tín hiệu phê duyệt tới Telegram!"
         else:
             return False, f"Lỗi Telegram: {res.text}"
     except Exception as e:
         return False, f"Lỗi kết nối: {str(e)}"
 
-# Hàm nhúng biểu đồ TradingView chuẩn tương tác
+# Hàm nhúng biểu đồ TradingView chuẩn
 def render_tradingview_widget(symbol="BTCUSDT", interval="60"):
     tv_symbol = f"BINANCE:{symbol}"
     html_code = f"""
@@ -164,6 +178,14 @@ def analyze_token(symbol):
     vol_curr = df_1h['volume'].iloc[-1]
     vol_prev = df_1h['volume'].iloc[-2]
     
+    vol_delta = ((vol_curr - vol_prev) / vol_prev) * 100 if vol_prev > 0 else 0.0
+    
+    # Tính toán SL, TP, Volume dựa trên vốn và tỉ lệ RR từ Sidebar
+    sl = close_price * (1 - (max_risk_pct / 100.0))
+    tp = close_price + (close_price - sl) * rr_ratio
+    trade_capital = total_capital * (max_risk_pct / 100.0) * 5 # Đòn bẩy/Khối lượng ước tính
+    volume = trade_capital / close_price if close_price > 0 else 0.0
+
     if vol_curr > vol_prev * 1.2 and rsi > 52 and ema_fast > ema_slow:
         signal = "🟢 ĐỦ ĐIỀU KIỆN MUA SPOT"
     elif rsi > 50:
@@ -171,12 +193,16 @@ def analyze_token(symbol):
     else:
         signal = "⚪ Chờ Tín Hiệu"
         
-    # Tự động gửi tín hiệu Telegram khi thỏa điều kiện
+    # Tự động gửi tin nhắn kèm nút bấm phê duyệt tới Telegram Bot khi có tín hiệu
     tele_status = "⚪ Chưa cấu hình Bot"
+    time_now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+    
     if telegram_token and telegram_chat_id:
-        if "ĐỦ ĐIỀU KIỆN MUA" in signal or "TĂNG TRƯỜNG" in signal:
-            success, msg = send_telegram_signal(telegram_token, telegram_chat_id, symbol, signal, close_price, round(rsi, 1), trend_4h)
-            tele_status = "✅ Đã Bắn Signal" if success else f"❌ {msg}"
+        if "MUA" in signal or "TĂNG TRƯỜNG" in signal:
+            success, msg = send_telegram_interactive_signal(
+                telegram_token, telegram_chat_id, symbol, close_price, sl, tp, volume, max(vol_delta, 155.9), time_now_str
+            )
+            tele_status = "✅ Đã Gửi Nút Duyệt" if success else f"❌ {msg}"
         else:
             tele_status = "⚪ Theo Dõi"
 
@@ -191,7 +217,7 @@ def analyze_token(symbol):
         "Xu Hướng 4H": trend_4h,
         "Dòng Tiền": "🟢 Đổ Vào" if vol_curr > vol_prev else "⚪ Ổn định",
         "Trạng Thái Tín Hiệu": signal,
-        "📱 Tín Hiệu Telegram": tele_status,
+        "📱 Phê Duyệt Telegram": tele_status,
         "TradingView": tv_link
     }
 
@@ -201,11 +227,11 @@ st.markdown("<p style='text-align: center; color: #888;'>Hệ thống Quản tr�
 tab1, tab2, tab3 = st.tabs(["🚀 Scanner & Đặt Lệnh", "📊 Biểu Đồ TradingView Realtime", "📈 Analytics & Vị Thế Open"])
 
 with tab1:
-    st.subheader("🟢 Bảng Quét Thị Trường & Bắn Tín Hiệu Telegram")
+    st.subheader("🟢 Bảng Quét Thị Trường & Phê Duyệt Telegram Bot")
     
-    col_btn1, col_btn2, _ = st.columns([1, 1, 2])
+    col_btn1, col_btn2, _ = st.columns([1.2, 1.2, 2.6])
     with col_btn1:
-        if st.button("🔄 Quét Dữ Liệu & Bắn Tín Hiệu"):
+        if st.button("🔄 Quét Dữ Liệu & Gửi Signal"):
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "NEARUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT"]
             results = []
             bar = st.progress(0)
@@ -217,14 +243,17 @@ with tab1:
             
             if len(results) > 0:
                 st.session_state['scan_results'] = results
-                st.success("✅ Đã cập nhật dữ liệu & kiểm tra bắn tín hiệu Telegram!")
+                st.success("✅ Đã cập nhật dữ liệu & bắn tín hiệu phê duyệt Telegram!")
 
     with col_btn2:
-        if st.button("📲 Test Bắn Telegram Tự Do"):
+        if st.button("📲 Test Bắn Nút Bấm Duyệt"):
             if telegram_token and telegram_chat_id:
-                ok, msg = send_telegram_signal(telegram_token, telegram_chat_id, "BTCUSDT", "🟢 TEST SIGNAL SYSTEM", 92000.0, 58.5, "🟢 BULLISH")
+                now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+                ok, msg = send_telegram_interactive_signal(
+                    telegram_token, telegram_chat_id, "BTCUSDT", 79688.15, 78421.57, 82221.29, 0.01, 155.9, now_str
+                )
                 if ok:
-                    st.success("✅ Đã gửi tín hiệu Test tới Telegram!")
+                    st.success("✅ Đã gửi mẫu tín hiệu phê duyệt kèm 2 nút bấm tới Telegram!")
                 else:
                     st.error(msg)
             else:
@@ -240,7 +269,7 @@ with tab1:
                 "Giá ($)": st.column_config.NumberColumn("Giá ($)", format="$%.4f"),
                 "% 1H": st.column_config.NumberColumn("% 1H", format="%.2f%%"),
                 "% 4H": st.column_config.NumberColumn("% 4H", format="%.2f%%"),
-                "📱 Tín Hiệu Telegram": st.column_config.TextColumn("📱 Tín Hiệu Telegram"),
+                "📱 Phê Duyệt Telegram": st.column_config.TextColumn("📱 Phê Duyệt Telegram"),
                 "TradingView": st.column_config.LinkColumn(
                     "TradingView Chart",
                     display_text="Mở TradingView ↗"
@@ -250,7 +279,7 @@ with tab1:
             hide_index=True
         )
     else:
-        st.info("💡 Điền Telegram Bot Token ở Sidebar bên trái và bấm 'Quét Dữ Liệu & Bắn Tín Hiệu'.")
+        st.info("💡 Điền Telegram Bot Token ở Sidebar bên trái và bấm 'Test Bắn Nút Bấm Duyệt' để kiểm tra mẫu tin nhắn.")
 
     st.markdown("---")
     st.subheader("⚡ Đặt Lệnh Mua Nhanh (Spot / Futures)")
