@@ -12,6 +12,7 @@ st.set_page_config(page_title="Binance Catalyst Agent OS", page_icon="🤖", lay
 CLOSED_TRADES_FILE = "closed_trades.json"
 REPORT_STATE_FILE = "report_state.json"
 TELEGRAM_OFFSET_FILE = "tg_offset.json"
+SKIPPED_TOKENS_FILE = "skipped_tokens.json"
 
 def load_json_file(filename, default_val):
     if os.path.exists(filename):
@@ -56,10 +57,14 @@ mode = st.sidebar.radio(
     ("📲 Phê duyệt qua Telegram (Nút bấm 2 chiều)", "⚡ Auto 100% (Tự động vào lệnh)")
 )
 
+if st.sidebar.button("🧹 Xóa bộ nhớ Token đã 'Bỏ qua'"):
+    save_json_file(SKIPPED_TOKENS_FILE, {})
+    st.sidebar.success("Đã xóa danh sách bỏ qua!")
+
 st.sidebar.divider()
 auto_refresh = st.sidebar.checkbox("🔄 Tự động theo dõi & cập nhật liên tục (mỗi 10s)", value=True)
 
-# 2. XỬ LÝ TELEGRAM
+# 2. XỬ LÝ TELEGRAM & CẢNH BÁO
 def send_telegram_alert(message):
     if tg_token and tg_chat_id:
         try:
@@ -148,8 +153,12 @@ def process_telegram_updates():
                                 
                         elif action == "SKIP":
                             sym = parts[1]
-                            requests.post(f"https://api.telegram.org/bot{tg_token}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": f"❌ Đã bỏ qua {sym}"})
-                            edit_msg = f"❌ *[ĐÃ HỦY TÍN HIỆU {sym}]*\n\n*Bạn đã chọn không vào lệnh này.*"
+                            skips = load_json_file(SKIPPED_TOKENS_FILE, {})
+                            skips[sym] = time.time()
+                            save_json_file(SKIPPED_TOKENS_FILE, skips)
+                            
+                            requests.post(f"https://api.telegram.org/bot{tg_token}/answerCallbackQuery", json={"callback_query_id": cb_id, "text": f"❌ Đã bỏ qua {sym} (Tạm ẩn 1H)"})
+                            edit_msg = f"❌ *[ĐÃ HỦY TÍN HIỆU {sym}]*\n\n*Bạn đã chọn không vào lệnh này. Bot sẽ tạm dừng gửi cảnh báo {sym} trong 1 giờ.*"
                             requests.post(f"https://api.telegram.org/bot{tg_token}/editMessageText", json={"chat_id": chat_id, "message_id": msg_id, "text": edit_msg, "parse_mode": "Markdown"})
                             
                 save_json_file(TELEGRAM_OFFSET_FILE, {"offset": last_offset})
@@ -158,7 +167,48 @@ def process_telegram_updates():
 
 process_telegram_updates()
 
-# 3. BINANCE API REALTIME
+# 3. BÁO CÁO PNL HÀNG NGÀY LÚC 07:00 AM
+def send_daily_report_check():
+    now = datetime.now()
+    report_state = load_json_file(REPORT_STATE_FILE, {"last_report_date": ""})
+    today_str = now.strftime("%Y-%m-%d")
+    
+    if now.hour >= 7 and report_state.get("last_report_date") != today_str:
+        closed_trades = load_json_file(CLOSED_TRADES_FILE, [])
+        cutoff = now - timedelta(days=1)
+        recent_trades = []
+        for t in closed_trades:
+            try:
+                t_time = datetime.strptime(t['exit_time'], "%Y-%m-%d %H:%M:%S")
+                if t_time >= cutoff:
+                    recent_trades.append(t)
+            except Exception:
+                pass
+        
+        total_trades = len(recent_trades)
+        wins = sum(1 for t in recent_trades if t.get('result') == 'WIN')
+        total_pnl = sum(t.get('pnl_usd', 0) for t in recent_trades)
+        win_rate = round((wins / total_trades * 100), 1) if total_trades > 0 else 0
+        
+        open_pos_count = len(st.session_state['positions'])
+        
+        msg = (
+            f"📊 *[BÁO CÁO TỔNG KẾT PNL - 07:00 AM]*\n\n"
+            f"📅 Ngày: `{today_str}`\n"
+            f"📈 **Lệnh đã chốt trong 24h:** `{total_trades}`\n"
+            f"🎯 **Thắng:** `{wins}` | 🛑 **Thua/Hòa:** `{total_trades - wins}`\n"
+            f"🏆 **Win Rate:** `{win_rate}%`\n"
+            f"💰 **Tổng PnL đã chốt ($):** `{'+' if total_pnl>0 else ''}${round(total_pnl, 2)}`\n"
+            f"⏳ **Vị thế đang chạy:** `{open_pos_count} lệnh`\n\n"
+            f"🤖 *Binance Agent OS chúc anh Tùng một ngày làm việc hiệu quả!*"
+        )
+        send_telegram_alert(msg)
+        report_state["last_report_date"] = today_str
+        save_json_file(REPORT_STATE_FILE, report_state)
+
+send_daily_report_check()
+
+# 4. BINANCE API REALTIME
 def get_realtime_price(symbol):
     formatted_symbol = symbol.upper().strip().replace("/", "")
     if not formatted_symbol.endswith("USDT"):
@@ -252,17 +302,14 @@ def analyze_token(symbol):
         if df_1h is None:
             return {"symbol": symbol, "status": "ERROR"}
         
-        # Calculate %4h
         p_4h_curr = df_4h['close'].iloc[-1]
         p_4h_prev = df_4h['close'].iloc[-2]
         pct_4h = ((p_4h_curr - p_4h_prev) / p_4h_prev) * 100 if p_4h_prev > 0 else 0.0
 
-        # Calculate %1h
         p_1h_curr = df_1h['close'].iloc[-1]
         p_1h_prev = df_1h['close'].iloc[-2]
         pct_1h = ((p_1h_curr - p_1h_prev) / p_1h_prev) * 100 if p_1h_prev > 0 else 0.0
 
-        # LẤY NẾN ĐÃ ĐÓNG HOÀN CHỈNH ĐỂ SO SÁNH VOLUME (TRÁNH LỖI ĐẦU GIỜ NẾN MỚI)
         vol_1h_closed_last = df_1h['qav'].iloc[-2]
         vol_1h_closed_prev = df_1h['qav'].iloc[-3]
 
@@ -290,8 +337,6 @@ def analyze_token(symbol):
         recent_low_1h = df_1h['low'].tail(15).min()
         
         is_green_candle = df_1h['close'].iloc[-1] > df_1h['open'].iloc[-1]
-        vol_curr = df_1h['vol'].iloc[-1]
-        vol_sma = df_1h['vol_sma20'].iloc[-1]
         is_high_volume = vol_1h_closed_last > df_1h['vol_sma20'].iloc[-2] if not pd.isna(df_1h['vol_sma20'].iloc[-2]) else True
         
         oi_change_pct = get_binance_open_interest(formatted_symbol)
@@ -330,45 +375,7 @@ def analyze_token(symbol):
     except Exception:
         return {"symbol": symbol, "status": "ERROR"}
 
-# 4. BÁO CÁO PNL HÀNG NGÀY LÚC 07:00 AM
-def send_daily_report_check():
-    now = datetime.now()
-    report_state = load_json_file(REPORT_STATE_FILE, {"last_report_date": ""})
-    today_str = now.strftime("%Y-%m-%d")
-    
-    if now.hour >= 7 and report_state.get("last_report_date") != today_str:
-        closed_trades = load_json_file(CLOSED_TRADES_FILE, [])
-        cutoff = now - timedelta(days=1)
-        recent_trades = []
-        for t in closed_trades:
-            try:
-                t_time = datetime.strptime(t['exit_time'], "%Y-%m-%d %H:%M:%S")
-                if t_time >= cutoff:
-                    recent_trades.append(t)
-            except Exception:
-                pass
-        
-        total_trades = len(recent_trades)
-        wins = sum(1 for t in recent_trades if t.get('result') == 'WIN')
-        total_pnl = sum(t.get('pnl_usd', 0) for t in recent_trades)
-        win_rate = round((wins / total_trades * 100), 1) if total_trades > 0 else 0
-        
-        msg = (
-            f"📊 *[BÁO CÁO PNL HÀNG NGÀY - 07:00 AM]*\n\n"
-            f"📅 Ngày: `{today_str}`\n"
-            f"📈 **Tổng lệnh đã đóng 24h:** `{total_trades}`\n"
-            f"🎯 **Thắng:** `{wins}` | 🛑 **Thua/Hòa:** `{total_trades - wins}`\n"
-            f"🏆 **Win Rate:** `{win_rate}%`\n"
-            f"💰 **Tổng PnL ($):** `{'+' if total_pnl>0 else ''}${round(total_pnl, 2)}`\n\n"
-            f"🤖 *Binance Agent OS chúc bạn giao dịch hiệu quả!*"
-        )
-        send_telegram_alert(msg)
-        report_state["last_report_date"] = today_str
-        save_json_file(REPORT_STATE_FILE, report_state)
-
-send_daily_report_check()
-
-# 5. WATCHLIST & VỊ THẾ DANG MỞ
+# 5. WATCHLIST & VỊ THẾ ĐANG MỞ
 watchlist_input = st.text_input("📋 Danh sách Token theo dõi:", value="BTC, ETH, NEAR, SOL, BNB, DOGE")
 
 st.divider()
@@ -446,7 +453,7 @@ if st.session_state['positions']:
 else:
     st.info("Chưa có vị thế nào đang mở.")
 
-# 6. QUÉT TÍN HIỆU SMART FLOW (TỰ ĐỘNG CHẠY MỖI VÒNG LẶP)
+# 6. QUÉT TÍN HIỆU SMART FLOW
 st.divider()
 
 manual_click = st.button("🔍 Quét Thủ Công Ngay Lập Tức", type="primary")
@@ -455,6 +462,10 @@ if auto_refresh or manual_click or st.session_state['scan_results'] is None:
     tokens = [t.strip() for t in watchlist_input.split(",") if t.strip()]
     if tokens:
         results = []
+        skips = load_json_file(SKIPPED_TOKENS_FILE, {})
+        now_ts = time.time()
+        active_skips = {k: v for k, v in skips.items() if now_ts - v < 3600}
+
         for idx, t in enumerate(tokens):
             res = analyze_token(t)
             if res["status"] == "OK":
@@ -479,8 +490,13 @@ if auto_refresh or manual_click or st.session_state['scan_results'] is None:
                             pos_size = round(min(raw_pos_size, max_pos_size), 2)
                             
                             is_already_open = any(item['symbol'] == res['symbol'] for item in st.session_state['positions'])
+                            is_skipped = res['symbol'] in active_skips
                             
-                            if not is_already_open:
+                            if is_already_open:
+                                signal = "✅ ĐÃ MỞ VỊ THẾ"
+                            elif is_skipped:
+                                signal = "🚫 ĐÃ BỎ QUA (TẠM ẨN 1H)"
+                            else:
                                 if "Auto 100%" in mode:
                                     st.session_state['positions'].append({
                                         "symbol": res['symbol'], "entry": price, "sl": sl, "initial_sl": sl, "tp": tp, "size": pos_size
@@ -498,8 +514,6 @@ if auto_refresh or manual_click or st.session_state['scan_results'] is None:
                                 else:
                                     send_telegram_signal_interactive(res['symbol'], price, sl, tp, pos_size, oi_str)
                                     signal = "📲 ĐÃ BẮN NÚT BẤM TELEGRAM"
-                            else:
-                                signal = "✅ ĐÃ MỞ VỊ THẾ"
                         else:
                             signal = "🟡 CHỜ (SL không hợp lệ)"
                     elif rsi <= 48 and is_green and is_vol and not is_flow:
