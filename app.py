@@ -31,23 +31,42 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ================= SIDEBAR: QUẢN LÝ VỐN & TELEGRAM BOT =================
+with st.sidebar:
+    st.header("⚙️ Quản Lý Vốn & Rủi Ro")
+    total_capital = st.number_input("Tổng vốn tài khoản ($)", min_value=10.0, value=1000.0, step=50.0)
+    max_risk_pct = st.slider("Rủi ro tối đa/lệnh (%)", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
+    rr_ratio = st.slider("Tỷ lệ Lợi nhuận/Rủi ro (R:R)", min_value=0.5, max_value=10.0, value=2.0, step=0.1)
+
+    st.markdown("---")
+    st.header("📱 Bot Telegram & Chế Độ")
+    telegram_token = st.text_input("Bot Token", type="password", help="Nhập Telegram Bot Token tạo từ @BotFather")
+    telegram_chat_id = st.text_input("Chat ID", value="1892567524")
+    
+    bot_mode = st.radio(
+        "🔴 Chế độ vận hành khi có tín hiệu:",
+        ["📱 Phê duyệt qua Telegram (Nút bấm 2 chiều)", "⚡ Auto 100% (Tự động vào lệnh)"],
+        index=1
+    )
+    
+    auto_track = st.checkbox("🔄 Tự động theo dõi (mỗi 10s)", value=True)
+
+# ================= KẾT THÚC SIDEBAR =================
+
 if 'positions' not in st.session_state:
     st.session_state['positions'] = []
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
-# Lấy dữ liệu 100% REALTIME từ các cụm Server Binance Public Data (Không bị chặn IP Cloud)
+# Lấy dữ liệu 100% REALTIME từ các cụm Server Binance Public Data
 def get_real_klines(symbol, interval="1h", limit=50):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
     endpoints = [
         f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
         f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
         f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
-        f"https://api3.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
         f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
     ]
-    
     for url in endpoints:
         try:
             res = requests.get(url, headers=headers, timeout=4)
@@ -73,18 +92,14 @@ def analyze_token(symbol):
     pct_1h = ((close_price - df_1h['close'].iloc[-2]) / df_1h['close'].iloc[-2]) * 100
     pct_4h = ((close_price - df_4h['close'].iloc[-2]) / df_4h['close'].iloc[-2]) * 100
     
-    # Lấy 20 nến giá thực tế 100% gần nhất từ sàn Binance để làm đường biểu đồ sóng
     price_wave = df_1h['close'].tail(20).tolist()
-    
     rsi = ta.momentum.RSIIndicator(df_1h['close'], window=14).rsi().iloc[-1]
-    if pd.isna(rsi):
-        rsi = 50.0
+    if pd.isna(rsi): rsi = 50.0
         
     ema_fast = ta.trend.EMAIndicator(df_4h['close'], window=9).ema_indicator().iloc[-1]
     ema_slow = ta.trend.EMAIndicator(df_4h['close'], window=21).ema_indicator().iloc[-1]
     
     trend_4h = "🟢 BULLISH" if ema_fast > ema_slow else "⚪ SIDEWAYS"
-    
     vol_curr = df_1h['volume'].iloc[-1]
     vol_prev = df_1h['volume'].iloc[-2]
     
