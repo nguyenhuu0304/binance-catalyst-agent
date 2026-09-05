@@ -1,5 +1,5 @@
 ﻿# ==============================================================================
-# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (FULL INTERACTIVE TELEGRAM)
+# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (NO-BLUR REALTIME)
 # ==============================================================================
 
 import streamlit as st
@@ -14,13 +14,28 @@ from datetime import datetime
 import streamlit.components.v1 as components
 
 # ------------------------------------------------------------------------------
-# 1. CẤU HÌNH TRANG & KHỞI TẠO SESSION STATE
+# 1. CẤU HÌNH TRANG & CHẶN MỜ GIAO DIỆN (CUSTOM CSS)
 # ------------------------------------------------------------------------------
 st.set_page_config(
     page_title="Binance Catalyst Agent OS - Institutional Edition",
     page_icon="⚡",
     layout="wide"
 )
+
+# Injected CSS: Chặn hoàn toàn hiệu ứng làm mờ (opacity) khi Streamlit load lại
+st.markdown("""
+    <style>
+    div[data-testid="stMain"], 
+    div[data-testid="stAppViewContainer"], 
+    section[data-testid="stSidebar"] {
+        opacity: 1 !important;
+        transition: none !important;
+    }
+    div[data-testid="stDataFrame"] {
+        transition: all 0.2s ease-in-out;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 GEMINI_API_KEY_SECRET = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -44,7 +59,7 @@ if "account_balance" not in st.session_state:
 if "max_risk_pct" not in st.session_state:
     st.session_state.max_risk_pct = 1.5
 if "tp_rr_ratio" not in st.session_state:
-    st.session_state.tp_rr_ratio = 2.0  # Mặc định TP = 2x Risk (R:R = 1:2)
+    st.session_state.tp_rr_ratio = 2.0
 if "max_open_orders" not in st.session_state:
     st.session_state.max_open_orders = 3
 if "daily_loss_limit" not in st.session_state:
@@ -61,10 +76,9 @@ HEADERS = {
 }
 
 # ------------------------------------------------------------------------------
-# 2. HÀM TƯƠNG TÁC TELEGRAM BOT (ĐÃ THÊM INLINE KEYBOARD)
+# 2. HÀM TƯƠNG TÁC TELEGRAM BOT
 # ------------------------------------------------------------------------------
 def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str = None):
-    """Gửi thông báo Telegram tích hợp nút phê duyệt Đồng Ý Mua / Bỏ Qua"""
     if not bot_token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -75,7 +89,6 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str 
         "parse_mode": "HTML"
     }
     
-    # Bổ sung nút bấm tương tác nếu có truyền symbol
     if symbol:
         payload["reply_markup"] = {
             "inline_keyboard": [
@@ -93,7 +106,7 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str 
         return False
 
 # ------------------------------------------------------------------------------
-# 3. BINANCE PRIVATE API (FUTURES SIGNED REQUEST)
+# 3. BINANCE PRIVATE API & THỊ TRƯỜNG
 # ------------------------------------------------------------------------------
 def binance_signed_request(method: str, path: str, api_key: str, api_secret: str, params=None):
     if not api_key or not api_secret:
@@ -145,11 +158,7 @@ def get_real_futures_account_info(api_key: str, api_secret: str):
             
     return usdt_balance, open_positions
 
-# ------------------------------------------------------------------------------
-# 4. HÀM TẢI DỮ LIỆU THỊ TRƯỜNG & PHÂN TÍCH KỸ THUẬT
-# ------------------------------------------------------------------------------
 def get_realtime_market_data_bulk(symbols):
-    """Lấy giá Realtime 100% từ Binance Cloud Data Node"""
     result = {}
     try:
         url = "https://data-api.binance.vision/api/v3/ticker/24hr"
@@ -169,7 +178,6 @@ def get_realtime_market_data_bulk(symbols):
     return result
 
 def get_real_technical_indicators(symbol: str):
-    """Tính RSI 1H, Trend 4H (SMA20) & Net Flow (% Lực Mua/Bán chủ động nến vừa đóng)"""
     rsi_1h = 50.0
     trend_4h = "NEUTRAL ⚪"
     vol_delta_str = "+0.0% (Net Flow)"
@@ -189,7 +197,6 @@ def get_real_technical_indicators(symbol: str):
             if not pd.isna(rsi_val):
                 rsi_1h = round(rsi_val, 1)
             
-            # Sử dụng cây nến 1H đã đóng cửa gần nhất (res[-2]) để tính Net Flow chuẩn xác
             last_closed_kline = res[-2]
             total_quote_vol = float(last_closed_kline[7])
             buy_quote_vol = float(last_closed_kline[10])
@@ -223,17 +230,9 @@ def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_de
     headers = {"Content-Type": "application/json"}
     
     prompt = f"""
-    Bạn là chuyên gia quản trị rủi ro Crypto. Hãy đánh giá tín hiệu giao dịch cho {symbol} ({market_type}):
-    - Giá hiện tại: ${price}
-    - Trend 4H: {trend_4h}
-    - RSI 1H: {rsi_1h}
-    - Vol Delta 1H: {vol_delta}
-
-    Trả về đúng định dạng JSON:
-    {{
-        "score": <Số từ 1 đến 10>,
-        "risk_warning": "<Nhận định rủi ro ngắn gọn dưới 15 từ>"
-    }}
+    Đánh giá tín hiệu giao dịch cho {symbol} ({market_type}):
+    - Giá: ${price} | Trend 4H: {trend_4h} | RSI 1H: {rsi_1h} | Vol Delta 1H: {vol_delta}
+    Trả về JSON dạng: {{"score": <1-10>, "risk_warning": "<dưới 15 từ>"}}
     """
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -247,7 +246,7 @@ def analyze_trade_signal_gemini(symbol: str, price: float, rsi_1h: float, vol_de
             return json.loads(raw_text)
     except Exception:
         pass
-    return {"score": 8, "risk_warning": "Dòng tiền lực mua tốt, chú ý quản lý vốn"}
+    return {"score": 8, "risk_warning": "Dòng tiền mua tốt, chú ý quản lý vốn"}
 
 def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_token="", chat_id=""):
     bulk_prices = get_realtime_market_data_bulk(symbols)
@@ -265,7 +264,6 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
             status = "🎯 TÍN HIỆU MUA"
             ai_eval = analyze_trade_signal_gemini(symbol, price, rsi_1h, vol_delta, trend_4h, "Spot" if is_spot else "Futures", user_gemini_key)
             
-            # Tính toán SL & TP cụ thể cho thông báo Telegram
             sl_pct = st.session_state.max_risk_pct / 100.0
             tp_pct = (st.session_state.max_risk_pct * st.session_state.tp_rr_ratio) / 100.0
             sl_price = price * (1 - sl_pct)
@@ -312,7 +310,7 @@ def get_binance_market_data(symbols, is_spot=False, user_gemini_key="", bot_toke
     return pd.DataFrame(data)
 
 # ------------------------------------------------------------------------------
-# 5. TRADINGVIEW PRO WIDGET
+# 4. TRADINGVIEW PRO WIDGET
 # ------------------------------------------------------------------------------
 def render_tradingview_widget(symbol="BTCUSDT"):
     tv_html = f"""
@@ -339,14 +337,13 @@ def render_tradingview_widget(symbol="BTCUSDT"):
     components.html(tv_html, height=550)
 
 # ------------------------------------------------------------------------------
-# 6. SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO, TP/SL & WATCHLIST
+# 5. SIDEBAR CẤU HÌNH QUẢN TRỊ RỦI RO & WATCHLIST
 # ------------------------------------------------------------------------------
 with st.sidebar:
     st.subheader("⚙️ Quản Lý Vốn & Rủi Ro")
     st.session_state.account_balance = st.number_input("Tổng vốn tài khoản ($)", value=st.session_state.account_balance, step=100.0, key="sb_acc_bal")
     st.session_state.max_risk_pct = st.number_input("Rủi ro tối đa/lệnh (% SL)", value=st.session_state.max_risk_pct, step=0.1, key="sb_max_risk")
     
-    # THIẾT LẬP TỶ LỆ CHỐT LỜI (TAKE PROFIT)
     st.session_state.tp_rr_ratio = st.number_input("Tỷ lệ Chốt Lời R:R (TP = x lần SL)", value=st.session_state.tp_rr_ratio, step=0.5, key="sb_tp_rr")
     tp_calculated_pct = st.session_state.max_risk_pct * st.session_state.tp_rr_ratio
     st.caption(f"🎯 Mức TP mục tiêu hiện tại: **+{tp_calculated_pct:.2f}%**")
@@ -411,10 +408,9 @@ with st.sidebar:
 
     st.subheader("🧠 Gemini AI Analyst")
     st.session_state.gemini_key = st.text_input("Gemini API Key", value=st.session_state.gemini_key, type="password", key="sb_gemini_key")
-    auto_refresh = st.checkbox("🔄 Tự động cập nhật (15s)", value=False, key="sb_auto_refresh")
 
 # ------------------------------------------------------------------------------
-# 7. GIAO DIỆN CHÍNH & 6 TABS FUNCTIONAL
+# 6. GIAO DIỆN CHÍNH & TÍNH NĂNG CẬP NHẬT NGẦM FRAGMENT (NO-BLUR)
 # ------------------------------------------------------------------------------
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
 
@@ -434,11 +430,11 @@ tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "🧪 Tài Khoản Demo Binance ($10k)"
 ])
 
-# --- TAB 1: FUTURES SCANNER ---
-with tab_futures:
-    st.subheader("📊 Bảng Báo Cáo Giá & Chỉ Báo Futures Realtime 100%")
+# --- FRAGMENT REALTIME SCANNER (Tự động quét ngầm mỗi 15s không làm mờ web) ---
+@st.fragment(run_every=15)
+def render_futures_scanner_fragment():
     df_futures = get_binance_market_data(
-        watchlist, 
+        st.session_state.watchlist_tokens, 
         is_spot=False, 
         user_gemini_key=st.session_state.gemini_key, 
         bot_token=st.session_state.bot_token, 
@@ -456,11 +452,10 @@ with tab_futures:
             use_container_width=True, hide_index=True
         )
 
-# --- TAB 2: SPOT MARKET ---
-with tab_spot:
-    st.subheader("🛒 Bảng Giá & Dòng Tiền Binance Spot Market (Realtime 100%)")
+@st.fragment(run_every=15)
+def render_spot_scanner_fragment():
     df_spot = get_binance_market_data(
-        watchlist, 
+        st.session_state.watchlist_tokens, 
         is_spot=True, 
         user_gemini_key=st.session_state.gemini_key, 
         bot_token=st.session_state.bot_token, 
@@ -477,6 +472,16 @@ with tab_spot:
             },
             use_container_width=True, hide_index=True
         )
+
+# --- TAB 1: FUTURES SCANNER ---
+with tab_futures:
+    st.subheader("📊 Bảng Báo Cáo Giá & Chỉ Báo Futures Realtime (Tự Cập Nhật Ngầm)")
+    render_futures_scanner_fragment()
+
+# --- TAB 2: SPOT MARKET ---
+with tab_spot:
+    st.subheader("🛒 Bảng Giá & Dòng Tiền Binance Spot Market (Tự Cập Nhật Ngầm)")
+    render_spot_scanner_fragment()
 
 # --- TAB 3: PNL & ANALYTICS ---
 with tab_pnl:
@@ -591,10 +596,3 @@ with tab_demo:
 
     if st.session_state.demo_positions:
         st.dataframe(pd.DataFrame(st.session_state.demo_positions), use_container_width=True)
-
-# ------------------------------------------------------------------------------
-# 8. LỆNH TỰ ĐỘNG CẬP NHẬT TRANG (AUTO REFRESH)
-# ------------------------------------------------------------------------------
-if auto_refresh:
-    time.sleep(15)
-    st.rerun()
