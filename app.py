@@ -63,6 +63,37 @@ if 'positions' not in st.session_state:
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = None
 
+# Hàm gửi tín hiệu qua Telegram Bot
+def send_telegram_signal(token, chat_id, symbol, signal, price, rsi, trend):
+    if not token or not chat_id:
+        return False, "Chưa nhập Bot Token hoặc Chat ID"
+    
+    text = (
+        f"🚀 *BINANCE CATALYST SIGNAL*\n\n"
+        f"🪙 *Token:* #{symbol}\n"
+        f"💵 *Giá Hiện tại:* ${price:.4f}\n"
+        f"📊 *RSI 1H:* {rsi}\n"
+        f"📈 *Xu hướng 4H:* {trend}\n"
+        f"⚡ *Tín hiệu:* {signal}\n"
+        f"⏰ *Thời gian:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        res = requests.post(url, json=payload, timeout=5)
+        if res.status_code == 200:
+            return True, "✅ Đã bắn Telegram thành công!"
+        else:
+            return False, f"Lỗi Telegram: {res.text}"
+    except Exception as e:
+        return False, f"Lỗi kết nối: {str(e)}"
+
 # Hàm nhúng biểu đồ TradingView chuẩn tương tác
 def render_tradingview_widget(symbol="BTCUSDT", interval="60"):
     tv_symbol = f"BINANCE:{symbol}"
@@ -123,7 +154,6 @@ def analyze_token(symbol):
     pct_1h = ((close_price - df_1h['close'].iloc[-2]) / df_1h['close'].iloc[-2]) * 100
     pct_4h = ((close_price - df_4h['close'].iloc[-2]) / df_4h['close'].iloc[-2]) * 100
     
-    price_wave = df_1h['close'].tail(20).tolist()
     rsi = ta.momentum.RSIIndicator(df_1h['close'], window=14).rsi().iloc[-1]
     if pd.isna(rsi): rsi = 50.0
         
@@ -141,9 +171,17 @@ def analyze_token(symbol):
     else:
         signal = "⚪ Chờ Tín Hiệu"
         
+    # Tự động gửi tín hiệu Telegram khi thỏa điều kiện
+    tele_status = "⚪ Chưa cấu hình Bot"
+    if telegram_token and telegram_chat_id:
+        if "ĐỦ ĐIỀU KIỆN MUA" in signal or "TĂNG TRƯỜNG" in signal:
+            success, msg = send_telegram_signal(telegram_token, telegram_chat_id, symbol, signal, close_price, round(rsi, 1), trend_4h)
+            tele_status = "✅ Đã Bắn Signal" if success else f"❌ {msg}"
+        else:
+            tele_status = "⚪ Theo Dõi"
+
     tv_link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"
     
-    # Cấu trúc cột dữ liệu: Đưa biểu đồ/link TradingView ra vị trí phía sau
     return {
         "Mã Token": symbol,
         "Giá ($)": close_price,
@@ -152,8 +190,8 @@ def analyze_token(symbol):
         "RSI 1H": round(rsi, 1),
         "Xu Hướng 4H": trend_4h,
         "Dòng Tiền": "🟢 Đổ Vào" if vol_curr > vol_prev else "⚪ Ổn định",
-        "Trạng Thái": signal,
-        "📈 Biểu Đồ Sóng (20H)": price_wave,
+        "Trạng Thái Tín Hiệu": signal,
+        "📱 Tín Hiệu Telegram": tele_status,
         "TradingView": tv_link
     }
 
@@ -163,11 +201,11 @@ st.markdown("<p style='text-align: center; color: #888;'>Hệ thống Quản tr�
 tab1, tab2, tab3 = st.tabs(["🚀 Scanner & Đặt Lệnh", "📊 Biểu Đồ TradingView Realtime", "📈 Analytics & Vị Thế Open"])
 
 with tab1:
-    st.subheader("🟢 Bảng Quét Thị Trường Realtime")
+    st.subheader("🟢 Bảng Quét Thị Trường & Bắn Tín Hiệu Telegram")
     
-    col_btn1, _ = st.columns([1, 3])
+    col_btn1, col_btn2, _ = st.columns([1, 1, 2])
     with col_btn1:
-        if st.button("🔄 Quét Dữ Liệu Sàn Realtime"):
+        if st.button("🔄 Quét Dữ Liệu & Bắn Tín Hiệu"):
             symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "NEARUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT"]
             results = []
             bar = st.progress(0)
@@ -179,12 +217,22 @@ with tab1:
             
             if len(results) > 0:
                 st.session_state['scan_results'] = results
-                st.success("✅ Đã cập nhật 100% dữ liệu thực tế từ Binance!")
+                st.success("✅ Đã cập nhật dữ liệu & kiểm tra bắn tín hiệu Telegram!")
+
+    with col_btn2:
+        if st.button("📲 Test Bắn Telegram Tự Do"):
+            if telegram_token and telegram_chat_id:
+                ok, msg = send_telegram_signal(telegram_token, telegram_chat_id, "BTCUSDT", "🟢 TEST SIGNAL SYSTEM", 92000.0, 58.5, "🟢 BULLISH")
+                if ok:
+                    st.success("✅ Đã gửi tín hiệu Test tới Telegram!")
+                else:
+                    st.error(msg)
+            else:
+                st.warning("⚠️ Vui lòng điền Bot Token và Chat ID ở cột bên trái trước!")
 
     if st.session_state['scan_results'] is not None and len(st.session_state['scan_results']) > 0:
         df_scan = pd.DataFrame(st.session_state['scan_results'])
         
-        # Đưa biểu đồ và link TradingView về phía sau bảng
         st.dataframe(
             df_scan,
             column_config={
@@ -192,10 +240,7 @@ with tab1:
                 "Giá ($)": st.column_config.NumberColumn("Giá ($)", format="$%.4f"),
                 "% 1H": st.column_config.NumberColumn("% 1H", format="%.2f%%"),
                 "% 4H": st.column_config.NumberColumn("% 4H", format="%.2f%%"),
-                "📈 Biểu Đồ Sóng (20H)": st.column_config.LineChartColumn(
-                    "📈 Biểu Đồ Sóng (20H)",
-                    width="medium"
-                ),
+                "📱 Tín Hiệu Telegram": st.column_config.TextColumn("📱 Tín Hiệu Telegram"),
                 "TradingView": st.column_config.LinkColumn(
                     "TradingView Chart",
                     display_text="Mở TradingView ↗"
@@ -205,7 +250,7 @@ with tab1:
             hide_index=True
         )
     else:
-        st.info("💡 Bấm 'Quét Dữ Liệu Sàn Realtime' để tải bảng dữ liệu thị trường.")
+        st.info("💡 Điền Telegram Bot Token ở Sidebar bên trái và bấm 'Quét Dữ Liệu & Bắn Tín Hiệu'.")
 
     st.markdown("---")
     st.subheader("⚡ Đặt Lệnh Mua Nhanh (Spot / Futures)")
@@ -236,7 +281,6 @@ with tab2:
     selected_tv_symbol = st.selectbox("Chọn Token để phân tích Chart:", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "NEARUSDT", "BNBUSDT", "XRPUSDT", "AVAXUSDT"])
     selected_tf = st.selectbox("Khung thời gian (Timeframe):", ["15", "60", "240", "D"], index=1, format_func=lambda x: "15m" if x=="15" else ("1h" if x=="60" else ("4h" if x=="240" else "1D")))
     
-    # Hiển thị TradingView Widget trực tiếp
     render_tradingview_widget(symbol=selected_tv_symbol, interval=selected_tf)
 
 with tab3:
