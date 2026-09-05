@@ -1,5 +1,5 @@
 ﻿# ==============================================================================
-# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (NO-BLUR REALTIME)
+# BINANCE CATALYST AGENT OS - INSTITUTIONAL EDITION (FULL INTERACTIVE REALTIME)
 # ==============================================================================
 
 import streamlit as st
@@ -14,7 +14,7 @@ from datetime import datetime
 import streamlit.components.v1 as components
 
 # ------------------------------------------------------------------------------
-# 1. CẤU HÌNH TRANG & CHẶN MỜ GIAO DIỆN (CUSTOM CSS)
+# 1. CẤU HÌNH TRANG & CHẶN MỜ TRIỆT ĐỂ (ADVANCED NO-BLUR CSS)
 # ------------------------------------------------------------------------------
 st.set_page_config(
     page_title="Binance Catalyst Agent OS - Institutional Edition",
@@ -22,24 +22,37 @@ st.set_page_config(
     layout="wide"
 )
 
-# Injected CSS: Chặn hoàn toàn hiệu ứng làm mờ (opacity) khi Streamlit load lại
+# Ghi đè triệt để thuộc tính mờ của Streamlit khi quét dữ liệu
 st.markdown("""
     <style>
-    div[data-testid="stMain"], 
+    /* Ép tất cả khung hình luôn hiển thị rõ 100% bất kể trạng thái rerun/loading */
+    html, body, .stApp, 
     div[data-testid="stAppViewContainer"], 
-    section[data-testid="stSidebar"] {
+    section[data-testid="stSidebar"], 
+    div[data-testid="stMain"],
+    div[data-testid="stElementContainer"],
+    .element-container {
         opacity: 1 !important;
+        filter: none !important;
         transition: none !important;
     }
+    
+    /* Vô hiệu hóa lớp mờ mặc định của Streamlit khi Running */
+    div[data-test-script-state="running"] * {
+        opacity: 1 !important;
+        filter: none !important;
+    }
+    
+    /* Làm đẹp bảng hiển thị */
     div[data-testid="stDataFrame"] {
-        transition: all 0.2s ease-in-out;
+        transition: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
 GEMINI_API_KEY_SECRET = st.secrets.get("GEMINI_API_KEY", "")
 
-# Init Session States
+# Khởi tạo Session States
 if "demo_balance" not in st.session_state:
     st.session_state.demo_balance = 10000.0
 if "demo_positions" not in st.session_state:
@@ -52,6 +65,8 @@ if "watchlist_tokens" not in st.session_state:
     ]
 if "last_alert_time" not in st.session_state:
     st.session_state.last_alert_time = {}
+if "tg_last_update_id" not in st.session_state:
+    st.session_state.tg_last_update_id = 0
 
 # Config Quản lý vốn & TP/SL
 if "account_balance" not in st.session_state:
@@ -76,9 +91,10 @@ HEADERS = {
 }
 
 # ------------------------------------------------------------------------------
-# 2. HÀM TƯƠNG TÁC TELEGRAM BOT
+# 2. HÀM TƯƠNG TÁC XỬ LÝ NÚT BẤM TELEGRAM (INBOUND & OUTBOUND TELEGRAM API)
 # ------------------------------------------------------------------------------
 def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str = None):
+    """Gửi thông báo Telegram kèm nút tương tác"""
     if not bot_token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -105,8 +121,86 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str, symbol: str 
     except Exception:
         return False
 
+def check_and_execute_telegram_callbacks(bot_token: str):
+    """Lắng nghe phản hồi từ Telegram khi người dùng bấm '✅ ĐỒNG Ý MUA' hoặc '❌ BỎ QUA'"""
+    if not bot_token:
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params = {
+        "offset": st.session_state.tg_last_update_id + 1,
+        "timeout": 1,
+        "allowed_updates": ["callback_query"]
+    }
+    
+    try:
+        res = requests.get(url, params=params, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("ok") and data.get("result"):
+                for update in data["result"]:
+                    st.session_state.tg_last_update_id = update["update_id"]
+                    if "callback_query" in update:
+                        cb = update["callback_query"]
+                        cb_id = cb["id"]
+                        cb_data = cb.get("data", "")
+                        msg_id = cb["message"]["message_id"]
+                        chat_id = cb["message"]["chat"]["id"]
+
+                        # Báo Telegram dừng hiệu ứng chờ xoay vòng trên nút bấm
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery", json={"callback_query_id": cb_id})
+
+                        if cb_data.startswith("BUY_"):
+                            symbol = cb_data.replace("BUY_", "")
+                            prices = get_realtime_market_data_bulk([symbol])
+                            entry_price = prices.get(symbol, {}).get("price", 100.0)
+                            
+                            sl_pct = st.session_state.max_risk_pct / 100.0
+                            tp_pct = (st.session_state.max_risk_pct * st.session_state.tp_rr_ratio) / 100.0
+                            sl_price = entry_price * (1 - sl_pct)
+                            tp_price = entry_price * (1 + tp_pct)
+                            
+                            # AI Agent Khớp Lệnh Mua Vào Danh Mục Demo/Vị thế
+                            st.session_state.demo_positions.append({
+                                "Thời gian": datetime.now().strftime("%H:%M:%S"),
+                                "Token": symbol,
+                                "Loại Lệnh": "LONG 🟢 (Duyệt Telegram)",
+                                "Khối lượng": "$200",
+                                "Giá Vào (Entry)": f"${entry_price:,.2f}",
+                                "Chốt Lời (TP)": f"${tp_price:,.2f}",
+                                "Cắt Lỗ (SL)": f"${sl_price:,.2f}",
+                                "Trạng thái": "🟢 Đang mở"
+                            })
+
+                            # Cập nhật lại tin nhắn Telegram xác nhận đã mua
+                            confirm_text = (
+                                f"✅ <b>[ĐÃ PHÊ DUYỆT MUA {symbol}]</b>\n\n"
+                                f"💵 <b>Giá Khớp:</b> ${entry_price:,.2f}\n"
+                                f"🛑 <b>Cắt Lỗ (SL):</b> ${sl_price:,.2f}\n"
+                                f"🎯 <b>Chốt Lời (TP):</b> ${tp_price:,.2f}\n\n"
+                                f"🤖 <b>AI Agent đã kích hoạt lệnh mua thành công trên hệ thống!</b>"
+                            )
+                            requests.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json={
+                                "chat_id": chat_id,
+                                "message_id": msg_id,
+                                "text": confirm_text,
+                                "parse_mode": "HTML"
+                            })
+
+                        elif cb_data.startswith("SKIP_"):
+                            symbol = cb_data.replace("SKIP_", "")
+                            skip_text = f"❌ <b>[ĐÃ BỎ QUA {symbol}]</b>\n\n🤖 AI Agent đã hủy tín hiệu mua này theo yêu cầu của bạn."
+                            requests.post(f"https://api.telegram.org/bot{bot_token}/editMessageText", json={
+                                "chat_id": chat_id,
+                                "message_id": msg_id,
+                                "text": skip_text,
+                                "parse_mode": "HTML"
+                            })
+    except Exception:
+        pass
+
 # ------------------------------------------------------------------------------
-# 3. BINANCE PRIVATE API & THỊ TRƯỜNG
+# 3. BINANCE API & THỊ TRƯỜNG REALTIME
 # ------------------------------------------------------------------------------
 def binance_signed_request(method: str, path: str, api_key: str, api_secret: str, params=None):
     if not api_key or not api_secret:
@@ -410,9 +504,13 @@ with st.sidebar:
     st.session_state.gemini_key = st.text_input("Gemini API Key", value=st.session_state.gemini_key, type="password", key="sb_gemini_key")
 
 # ------------------------------------------------------------------------------
-# 6. GIAO DIỆN CHÍNH & TÍNH NĂNG CẬP NHẬT NGẦM FRAGMENT (NO-BLUR)
+# 6. GIAO DIỆN CHÍNH & LẮNG NGHE TÍN HIỆU TỰ ĐỘNG
 # ------------------------------------------------------------------------------
 st.title("⚡ Binance Catalyst Agent OS - Institutional Edition")
+
+# Kiểm tra và xử lý nút bấm từ Telegram ở mỗi chu kỳ quét
+if st.session_state.bot_token:
+    check_and_execute_telegram_callbacks(st.session_state.bot_token)
 
 if trading_mode == "⚡ Tự Động Đặt Lệnh (Auto)":
     st.warning("⚠️ **Đang bật Chế độ AUTO TRADING**: Bot sẽ tự động thực thi lệnh khi thỏa điều kiện RSI & AI Score.")
@@ -430,9 +528,13 @@ tab_futures, tab_spot, tab_pnl, tab_tv, tab_api, tab_demo = st.tabs([
     "🧪 Tài Khoản Demo Binance ($10k)"
 ])
 
-# --- FRAGMENT REALTIME SCANNER (Tự động quét ngầm mỗi 15s không làm mờ web) ---
-@st.fragment(run_every=15)
+# --- FRAGMENT REALTIME SCANNER (Tự động quét & lắng nghe Telegram mỗi 10s) ---
+@st.fragment(run_every=10)
 def render_futures_scanner_fragment():
+    # Lắng nghe liên tục phản hồi từ Telegram
+    if st.session_state.bot_token:
+        check_and_execute_telegram_callbacks(st.session_state.bot_token)
+        
     df_futures = get_binance_market_data(
         st.session_state.watchlist_tokens, 
         is_spot=False, 
@@ -452,7 +554,7 @@ def render_futures_scanner_fragment():
             use_container_width=True, hide_index=True
         )
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=10)
 def render_spot_scanner_fragment():
     df_spot = get_binance_market_data(
         st.session_state.watchlist_tokens, 
@@ -493,11 +595,11 @@ with tab_pnl:
     m4.metric("Max Drawdown", "0.0%")
     
     st.divider()
-    st.markdown("### 📋 Vị Thế Demo Đang Chạy")
+    st.markdown("### 📋 Vị Thế Đang Chạy (Bao gồm lệnh duyệt từ Telegram)")
     if st.session_state.demo_positions:
         st.dataframe(pd.DataFrame(st.session_state.demo_positions), use_container_width=True)
     else:
-        st.info("Chưa có vị thế thử nghiệm nào.")
+        st.info("Chưa có vị thế mở nào.")
 
     st.markdown("### 📜 Lịch Sử Lệnh Đã Chốt")
     if st.session_state.trade_history:
